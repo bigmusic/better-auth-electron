@@ -1,0 +1,37 @@
+// root/tsconfig.base.json
+{
+    "$schema": "https://json.schemastore.org/tsconfig",
+    "compilerOptions": {
+        "target": "ESNext",
+        "module": "ESNext",
+        "moduleResolution": "bundler",
+        "isolatedModules": true,
+        "allowImportingTsExtensions": true,
+        "skipLibCheck": true,
+        "strict": true,
+        "strictNullChecks": true,
+        "noImplicitAny": true,
+        "strictFunctionTypes": true,
+        "strictBindCallApply": true,
+        "strictPropertyInitialization": true,
+        "noImplicitThis": true,
+        "useUnknownInCatchVariables": true,
+        "alwaysStrict": true,
+        "noUnusedLocals": false,
+        "noUnusedParameters": false,
+        "noFallthroughCasesInSwitch": true,
+        "noImplicitReturns": true,
+        "esModuleInterop": true,
+        "forceConsistentCasingInFileNames": true,
+        "verbatimModuleSyntax": true,
+        "resolveJsonModule": true,
+        "declaration": true,
+        "sourceMap": true,
+        "useDefineForClassFields": true,
+        "moduleDetection": "force",
+        "erasableSyntaxOnly": true,
+        "noUncheckedSideEffectImports": true,
+        "outDir": "./dist"
+    },
+    "exclude": ["node_modules", "trash"]
+}

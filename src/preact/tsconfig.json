@@ -1,0 +1,22 @@
+// packages/better-auth-electron/tsconfig.preact.json
+{
+    "extends": "../../tsconfig.base.json",
+    "compilerOptions": {
+        "lib": ["ESNext", "DOM", "DOM.Iterable"],
+        "jsx": "react-jsx",
+        "jsxImportSource": "preact",
+
+        "types": ["node"],
+        "noEmit": true,
+        "composite": false,
+        "declaration": false,
+        "declarationMap": false,
+        "paths": {
+            "react": ["../../node_modules/preact/compat"],
+            "react-dom": ["../../node_modules/preact/compat"]
+        },
+        "rootDir": ".."
+    },
+    "include": [".", "../options"],
+    "exclude": ["node_modules"]
+}

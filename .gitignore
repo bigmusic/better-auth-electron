@@ -1,0 +1,77 @@
+# =========================
+# Security (Sensitive files)
+# =========================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.secret
+
+# =========================
+# Dependencies and Cache
+# =========================
+node_modules/
+.pnpm-store/
+.npm/
+.eslintcache
+.turbo/
+
+# =========================
+# Build Artifacts
+# =========================
+dist/
+out/
+build/
+trash/
+coverage/
+
+# =========================
+# Electron Build Artifacts
+# =========================
+# electron-builder default output directories
+release/
+pack/
+win-unpacked/
+mac/
+linux/
+
+# =========================
+# Framework and Tool Generated Files
+# =========================
+# TanStack Router
+routeTree.gen.ts
+**/*.gen.ts
+.tanstack/
+**/.tanstack/
+
+# =========================
+# System and Logs
+# =========================
+.DS_Store
+Thumbs.db
+*.log
+*.log.*
+npm-debug.log*
+yarn-debug.log*
+pnpm-debug.log*
+
+# =========================
+# Editor Settings
+# =========================
+.vscode
+# !.vscode/settings.json
+# !.vscode/tasks.json
+# !.vscode/launch.json
+# !.vscode/extensions.json
+.idea/
+*.tsbuildinfo
+
+# builded file
+*.tgz
+
+git.md
+
+yalc.md
+
+/scripts

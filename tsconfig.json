@@ -1,0 +1,16 @@
+// root/packages/better-auth-electron/tsconfig.json
+{
+    "extends": "./tsconfig.base.json",
+    "compilerOptions": {
+        "noEmit": true,
+        "allowSyntheticDefaultImports": true,
+
+        "baseUrl": ".",
+        "lib": ["ESNext", "DOM", "DOM.Iterable"],
+        "jsx": "react-jsx",
+        "jsxImportSource": "preact"
+    },
+    "include": ["src/**/*"],
+    "exclude": ["node_modules", "dist", "src/preact/**/*"],
+    "files": []
+}

@@ -1,0 +1,19 @@
+// root/tsconfig.front-end.json
+{
+    "extends": "../../tsconfig.base.json",
+
+    "compilerOptions": {
+        "lib": ["ESNext", "DOM", "DOM.Iterable"],
+        "jsx": "react-jsx",
+        "jsxImportSource": "preact",
+
+        "types": ["electron", "node"],
+
+        "noEmit": true,
+        "composite": false,
+        "declaration": false,
+        "rootDir": ".."
+    },
+    "include": [".", "../utils"],
+    "exclude": ["node_modules"]
+}

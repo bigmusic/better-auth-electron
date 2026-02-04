@@ -1,0 +1,376 @@
+// root/packages/better-auth-electron/src/utils/electron-plugin-utils.ts
+
+import { decodeBase64urlIgnorePadding, encodeBase64urlNoPadding } from '@oslojs/encoding'
+// import type { AuthClient, BetterAuthClientOptions } from 'better-auth/client'
+import type { IpcRenderer, WebFrame, WebUtils } from 'electron'
+// import type log from 'electron-log'
+// import { atom } from 'jotai/vanilla'
+import z from 'zod'
+import { BigIOError } from './electron-plugin-env'
+import { okOr, safeTry } from './electron-plugin-helper'
+
+type Prettify<T> = {
+    [K in keyof T]: T[K]
+} & {}
+type BigIOLogger = {
+    info(message: unknown, ...args: unknown[]): void
+    warn(message: unknown, ...args: unknown[]): void
+    error(message: unknown, ...args: unknown[]): void
+    debug?(message: unknown, ...args: unknown[]): void
+}
+
+export const bigIOLogger: BigIOLogger = {
+    info: (message: unknown, ...args: unknown[]) => {
+        console.log(message, ...args)
+    },
+    warn: (message: unknown, ...args: unknown[]) => {
+        console.warn(message, ...args)
+    },
+    error: (message: unknown, ...args: unknown[]) => {
+        console.error(message, ...args)
+    },
+    debug: (message: unknown, ...args: unknown[]) => {
+        console.debug(message, ...args)
+    },
+}
+
+type SafeProcess = {
+    readonly platform: NodeJS.Platform
+    readonly versions: NodeJS.ProcessVersions
+    readonly env: NodeJS.ProcessEnv
+}
+
+type ElectronWindow = Window & {
+    electron: {
+        thisIsInSidePackages: 'this is inside package'
+        webUtils: Prettify<WebUtils>
+        webFrame: Prettify<WebFrame>
+        process: Prettify<SafeProcess>
+        ipcRenderer: Prettify<IpcRenderer>
+    }
+}
+
+export function isElectronWindow(win: Window | typeof globalThis): win is ElectronWindow {
+    return typeof win !== 'undefined' && 'electron' in win && typeof win.electron !== 'undefined'
+}
+
+const crypto = globalThis.crypto
+const ALGO_SHA = 'SHA-256'
+const HKDF_ALGO = { name: 'HKDF' }
+const AES_ALGO = { name: 'AES-GCM', length: 128 }
+const secretKeyCache = new Map<string, CryptoKey>()
+
+const MAX_CACHE_SIZE = 50
+const GLOBAL_ENCODER = new TextEncoder()
+async function getCachedKey(secret: string): Promise<CryptoKey> {
+    const checkSecret = okOr(secret, {
+        msg: 'Invalid secret input for getCachedKey',
+        ctx: {
+            secretLength: secret?.length,
+        },
+    })
+    const keyDataBuffer = await safeTry(
+        crypto.subtle.digest(ALGO_SHA, GLOBAL_ENCODER.encode(checkSecret)),
+        {
+            msg: 'Failed to create SHA digest from secret',
+            ctx: { secretLength: checkSecret.length },
+        },
+    )
+
+    const cacheKeyIndex = encode64(keyDataBuffer)
+    if (secretKeyCache.has(cacheKeyIndex)) {
+        const cachedKey = secretKeyCache.get(cacheKeyIndex)
+        if (cachedKey) {
+            secretKeyCache.delete(cacheKeyIndex)
+            secretKeyCache.set(cacheKeyIndex, cachedKey)
+            return cachedKey
+        }
+    }
+    const keyMaterial = await safeTry(
+        crypto.subtle.importKey('raw', GLOBAL_ENCODER.encode(checkSecret), HKDF_ALGO, false, [
+            'deriveKey',
+        ]),
+        {
+            msg: 'Failed to import raw key material',
+            ctx: {
+                algo: HKDF_ALGO.name,
+            },
+        },
+    )
+    const key = await safeTry(
+        crypto.subtle.deriveKey(
+            {
+                name: 'HKDF',
+                hash: ALGO_SHA,
+                salt: new Uint8Array(),
+                info: GLOBAL_ENCODER.encode('better-auth-electron-v1'),
+            },
+            keyMaterial,
+            AES_ALGO,
+            false,
+            ['encrypt', 'decrypt'],
+        ),
+        {
+            msg: 'HKDF deriveKey failed',
+            ctx: {
+                algo: HKDF_ALGO.name,
+            },
+        },
+    )
+    if (secretKeyCache.size >= MAX_CACHE_SIZE) {
+        const staleKey = secretKeyCache.keys().next().value
+        if (staleKey) {
+            secretKeyCache.delete(staleKey)
+        }
+    }
+    secretKeyCache.set(cacheKeyIndex, key)
+    return key
+}
+
+function encode64(buffer: Uint8Array | ArrayBuffer) {
+    const checkBuffer = okOr(buffer, {
+        msg: 'Invalid buffer input for toBase64Url',
+        ctx: { type: typeof buffer },
+    })
+    const bytes = checkBuffer instanceof Uint8Array ? checkBuffer : new Uint8Array(checkBuffer)
+
+    return encodeBase64urlNoPadding(bytes)
+}
+
+function decode64(str: string): Uint8Array {
+    const checkStr = okOr(str, {
+        msg: 'Invalid string input for fromBase64Url',
+        ctx: {
+            stringLength: str?.length,
+        },
+    })
+
+    const normalizedStr = checkStr.replace(/\+/g, '-').replace(/\//g, '_')
+    const bytesBuffer = safeTry(() => decodeBase64urlIgnorePadding(normalizedStr), {
+        msg: 'Base64 Decoding Failed',
+        ctx: {
+            msg: 'Oslo decode failed',
+            ctx: { strPart: str.slice(0, 10) },
+        },
+    })
+
+    return bytesBuffer as unknown as Uint8Array
+}
+
+export async function encryptTicket(
+    payload: Record<string, unknown>,
+    secret: string,
+    ttlSeconds = 60,
+): Promise<string> {
+    const checkPayload = okOr(payload, {
+        msg: 'Invalid payload: input is null or undefined for encryptTicket',
+        ctx: {
+            keys: payload ? Object.keys(payload) : null,
+        },
+    })
+    const checkSecret = okOr(secret, {
+        msg: 'Invalid secret: input is empty or invalid for encryptTicket',
+        ctx: { secretLength: secret?.length },
+    })
+    const key = await safeTry(getCachedKey(checkSecret), {
+        msg: 'Key initialization failed: unable to derive crypto key from secret',
+        ctx: { secretLength: secret.length },
+    })
+    const iv = okOr(crypto.getRandomValues(new Uint8Array(12)), {
+        msg: 'Crypto failure: system RNG failed to generate Initialization Vector (IV)',
+        ctx: { requiredBytes: 12 },
+    })
+    const finalPayload = {
+        payload: checkPayload,
+        exp: Date.now() + ttlSeconds * 1000,
+    }
+    const jsonString = safeTry(() => JSON.stringify(finalPayload), {
+        msg: 'Serialization failed: payload contains unserializable data (e.g., BigInt, Circular ref)',
+        ctx: {
+            payloadKeys: Object.keys(checkPayload),
+            exp: finalPayload.exp,
+        },
+    })
+
+    const encodedData = GLOBAL_ENCODER.encode(jsonString)
+    const encryptedContent = await safeTry(
+        crypto.subtle.encrypt({ name: 'AES-GCM', iv: iv }, key, encodedData),
+        {
+            msg: 'Encryption failed: AES-GCM encryption process encountered an error',
+            ctx: {
+                ivLength: iv.byteLength,
+                dataLength: encodedData.byteLength,
+                algo: 'AES-GCM',
+            },
+        },
+    )
+    const returnIV = encode64(iv)
+    const returnData = encode64(encryptedContent)
+
+    return `${returnIV}.${returnData}`
+}
+
+export async function decryptTicket<T = Record<string, unknown>>(
+    ticket: string,
+    secret: string,
+): Promise<T> {
+    const checkTicket = okOr(ticket, {
+        msg: 'Ticket Validation for decryptTicket Failed: Input is null or undefined',
+        ctx: {
+            length: ticket?.length,
+        },
+    })
+    const checkSecret = okOr(secret, {
+        msg: 'Secret Validation for decryptTicket Failed: Input is null or undefined',
+        ctx: {
+            length: secret?.length,
+        },
+    })
+    const now = Date.now()
+    if (!checkTicket.includes('.')) {
+        throw new BigIOError('Ticket Malformed: Missing separator (.)', {
+            bigioErrorStack: [
+                {
+                    msg: 'Ticket Malformed: Missing separator (.)',
+                    ctx: { ticketPart: `${checkTicket.slice(0, 10)}...` },
+                    timestamp: now,
+                },
+            ],
+        })
+    }
+    const [ivUrl, dataUrl] = checkTicket.split('.')
+    if (!(ivUrl && dataUrl)) {
+        throw new BigIOError('Invalid ticket format: incomplete parts', {
+            bigioErrorStack: [
+                {
+                    msg: 'Invalid ticket format: incomplete parts',
+                    ctx: { ticketPart: `${checkTicket.slice(0, 10)}...` },
+                    timestamp: now,
+                },
+            ],
+        })
+    }
+    const iv = decode64(ivUrl)
+    const data = decode64(dataUrl)
+
+    if (iv.byteLength !== 12) {
+        throw new BigIOError('Crypto Failure: Invalid IV length', {
+            bigioErrorStack: [
+                {
+                    msg: 'AES-GCM requires 12-byte IV',
+                    ctx: { actualLength: iv.byteLength, expected: 12 },
+                    timestamp: now,
+                },
+            ],
+        })
+    }
+    const key = await safeTry(getCachedKey(checkSecret), {
+        msg: 'Key Derivation Failed: Unable to generate crypto key',
+        ctx: { secretLength: checkSecret.length },
+    })
+    const decryptedBuffer = await safeTry(
+        crypto.subtle.decrypt(
+            { name: 'AES-GCM', iv: iv as unknown as BufferSource },
+            key,
+            data as unknown as BufferSource,
+        ),
+        {
+            msg: 'Decryption Failed: Authentication tag mismatch or data corruption',
+            ctx: { ivLength: iv.byteLength, dataLength: data.byteLength },
+        },
+    )
+    const decodedString = new TextDecoder().decode(decryptedBuffer)
+    const rawJson = safeTry(() => JSON.parse(decodedString), {
+        msg: 'JSON Parsing Decrypted payload Failed',
+        ctx: { len: decodedString.length, prefix: decodedString.slice(0, 10) },
+    })
+    const isValidPayload = safeTry(
+        () =>
+            z
+                .object({
+                    payload: z.record(z.string(), z.unknown()).or(z.looseObject({})),
+                    exp: z.number().int().min(1),
+                })
+                .parse(rawJson),
+        true,
+    )
+    const expNow = Date.now()
+
+    if (expNow > isValidPayload.exp) {
+        throw new BigIOError('Ticket Expired', {
+            bigioErrorStack: [
+                {
+                    msg: 'Ticket Expired',
+                    ctx: {
+                        exp: isValidPayload.exp,
+                        now: expNow,
+                        expiredByMs: expNow - isValidPayload.exp,
+                    },
+                    timestamp: expNow,
+                },
+            ],
+        })
+    }
+    return isValidPayload.payload as T
+}
+
+export function pkceGenerateVerifier(byteLength = 32): string {
+    if (byteLength < 32 || byteLength > 96) {
+        throw new BigIOError('PKCE Error: Invalid Verifier Length', {
+            bigioErrorStack: [
+                {
+                    msg: 'Verifier byte length must be between 32 and 96',
+                    ctx: {
+                        inputLength: byteLength,
+                        rfcRequirement: '43-128 chars string',
+                    },
+                    timestamp: Date.now(),
+                },
+            ],
+        })
+    }
+
+    const buffer = new Uint8Array(byteLength)
+
+    const randomValues = okOr(crypto.getRandomValues(buffer), {
+        msg: 'PKCE Failure: System RNG failed to generate Verifier entropy',
+        ctx: { requiredBytes: byteLength },
+    })
+    const result = encode64(randomValues)
+    return result
+}
+
+export async function pkceGenerateChallenge(verifier: string): Promise<string> {
+    const checkVerifier = okOr(verifier, {
+        msg: 'PKCE Challenge Failure: Verifier input is empty or invalid',
+        ctx: { length: verifier?.length },
+    })
+    const data = GLOBAL_ENCODER.encode(checkVerifier)
+    const hashBuffer = await safeTry(crypto.subtle.digest(ALGO_SHA, data), {
+        msg: `PKCE Challenge Failure: ${ALGO_SHA} digest failed`,
+        ctx: {
+            verifierBytes: data.byteLength,
+            algo: ALGO_SHA,
+        },
+    })
+
+    return encode64(hashBuffer)
+}
+const REGEX_BASE64_URL = /^[a-zA-Z0-9\-_]+=*$/
+
+export function SearchParamsZod(ELECTRON_SCHEME: string, PROVIDERS: string[]) {
+    return z.object({
+        scheme: z
+            .string()
+            .min(1, 'Scheme cannot be empty')
+            .regex(REGEX_BASE64_URL)
+            .refine((scheme) => scheme === ELECTRON_SCHEME, {
+                message: 'Invalid scheme provided',
+            }),
+        provider: z.enum(PROVIDERS),
+        challenge: z
+            .string()
+            .length(43, 'Challenge must be exactly 43 characters')
+            .regex(REGEX_BASE64_URL),
+    })
+}
