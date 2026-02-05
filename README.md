@@ -1,4 +1,41 @@
 ## I'm currently studying the official implementation; the documentation is still rough but will be improved soon. I'm eager and looking forward to exchanging ideas with everyone.
+
+Based on my study of the official implementation code, I have decided on the following to-do list:
+**1. Architecture: The "Silent Handoff" (Stateless & Secure)**
+
+* [ ] **Server-Side Cookie Interception**: Modify `electron-server-plugin` to intercept the OAuth callback response.
+* *Action*: Strip the `Set-Cookie` header (specifically the session token) from the response to prevent overwriting the user's browser session.
+* *Goal*: Achieve strict physical isolation between Web Session and Electron Session.
+
+
+* [ ] **Stateless OAuth Flow**: Ensure the OAuth flow relies solely on the encrypted `Ticket` mechanism, making the browser a purely stateless transport layer for Electron authentication.
+
+**2. Security & Hardening**
+
+* [ ] **Secure Persistence**: Implement `safeStorage` (DPAPI/Keychain) for encrypting the persisted PKCE Verifier on disk.
+* *Reason*: Prevent plaintext credentials from resting on the file system.
+
+
+* [ ] **User-Agent Scrubbing**: Global removal of "Electron" tokens from the `User-Agent` string at the `app.on('ready')` stage.
+* *Reason*: Bypass WAF/Anti-Bot protections that block Electron-based requests during the ticket exchange phase.
+
+
+* [ ] **Automated CSP Injection**: Implement `onHeadersReceived` interceptor in the Main Process.
+* *Action*: Automatically append the backend API URL to the `connect-src` directive.
+* *Goal*: Provide a "Zero-Config" experience by preventing CSP violations without requiring users to manually edit `index.html`.
+
+
+
+**3. Developer Experience (DX) & API**
+
+* [ ] **Enhanced Renderer API**: Refactor `getActions` to introduce a dedicated `authClient.bigio` namespace.
+* *Feature*: Implement `authClient.bigio.signIn({ provider: 'github' })` wrapper.
+* *Implementation*: Utilize `window.open` (intercepted by Main) or IPC to trigger the flow, keeping the API consistent with the official web client style.
+
+
+* [ ] **Smart Web Handoff UI (Optional/Next)**: Update the web-side confirmation page to detect and display the currently logged-in web user, offering a "Continue as [User]" button for a seamless transition.
+
+
 # @bigio/better-auth-electron
 
 > **Work In Progress:** This library is actively being developed. Detailed documentation and architecture diagrams are coming soon.
