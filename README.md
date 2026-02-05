@@ -6,7 +6,7 @@
 
 Designed for production-grade applications, this library provides a secure, "batteries-included" solution to integrate [Better Auth](https://www.better-auth.com) into Electron apps without the headache of writing manual IPC bridges or handling complex OAuth window flows.
 
-## ✨ Features
+## Features
 
 - ** Native Secure Context & Origin Fix:**
   Leverages `protocol.registerSchemesAsPrivileged` to treat your custom scheme as a secure context. This solves the infamous `Origin` header mismatch and enables `SameSite` cookies to work natively without hacks.
