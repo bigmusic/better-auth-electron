@@ -1,3 +1,4 @@
+## I'm currently studying the official implementation; the documentation is still rough but will be improved soon. I'm eager and looking forward to exchanging ideas with everyone.
 # @bigio/better-auth-electron
 
 > **Work In Progress:** This library is actively being developed. Detailed documentation and architecture diagrams are coming soon.
