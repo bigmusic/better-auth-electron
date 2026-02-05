@@ -1,6 +1,6 @@
 {
     "name": "@bigio/better-auth-electron",
-    "version": "1.0.0",
+    "version": "1.0.1",
     "author": "bigmusic",
     "license": "MIT",
     "private": false,
@@ -10,7 +10,11 @@
         "url": "git+https://github.com/bigmusic/better-auth-electron.git"
     },
     "type": "module",
-    "files": ["dist", "README.md", "LICENSE.md"],
+    "files": [
+        "dist",
+        "README.md",
+        "LICENSE.md"
+    ],
     "scripts": {
         "push": "pnpm build && yalc publish --push",
         "build": "tsup",

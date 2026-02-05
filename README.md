@@ -14,7 +14,7 @@ Designed for production-grade applications, this library provides a secure, "bat
 - ** Secure PKCE Flow:**
   Implements the standard **Proof Key for Code Exchange** protocol out-of-the-box. Ensures enterprise-grade security for your OAuth exchanges without exposing secrets.
 
-- ** Preact SSR Ready:**
+- ** Preact SSR Coming soon:**
   Includes a dedicated, lightweight Preact entry point optimized for Server-Side Rendering (SSR) in login windows.
   _(React 19 supported. Vue/Svelte support coming soon!)_
 
