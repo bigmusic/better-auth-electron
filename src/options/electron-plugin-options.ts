@@ -126,6 +126,7 @@ export type ElectronMainPluginOptions = {
     PROVIDERS: string[]
     FRONTEND_URL: string
     ELECTRON_APP_NAME: string
+    CONTENT_SECURITY_POLICY?: string
     /**
      * The specific action path or host used to identify the auth callback.
      * This will be combined with the scheme to form the full callback URL.

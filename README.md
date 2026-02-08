@@ -1,40 +1,34 @@
 ## I'm currently studying the official implementation; the documentation is still rough but will be improved soon. I'm eager and looking forward to exchanging ideas with everyone.
 
 Based on my study of the official implementation code, I have decided on the following to-do list:
+
 **1. Architecture: The "Silent Handoff" (Stateless & Secure)**
 
-* [ ] **Server-Side Cookie Interception**: Modify `electron-server-plugin` to intercept the OAuth callback response.
-* *Action*: Strip the `Set-Cookie` header (specifically the session token) from the response to prevent overwriting the user's browser session.
-* *Goal*: Achieve strict physical isolation between Web Session and Electron Session.
+- [ ] **Server-Side Cookie Interception**: Modify `electron-server-plugin` to intercept the OAuth callback response.
+- _Action_: Strip the `Set-Cookie` header (specifically the session token) from the response to prevent overwriting the user's browser session.
+- _Goal_: Achieve strict physical isolation between Web Session and Electron Session.
 
-
-* [ ] **Stateless OAuth Flow**: Ensure the OAuth flow relies solely on the encrypted `Ticket` mechanism, making the browser a purely stateless transport layer for Electron authentication.
+- [ ] **Stateless OAuth Flow**: Ensure the OAuth flow relies solely on the encrypted `Ticket` mechanism, making the browser a purely stateless transport layer for Electron authentication.
 
 **2. Security & Hardening**
 
-* [ ] **Secure Persistence**: Implement `safeStorage` (DPAPI/Keychain) for encrypting the persisted PKCE Verifier on disk.
-* *Reason*: Prevent plaintext credentials from resting on the file system.
+- [ ] **Secure Persistence**: Implement `safeStorage` (DPAPI/Keychain) for encrypting the persisted PKCE Verifier on disk.
+- _Reason_: Prevent plaintext credentials from resting on the file system.
 
+- [ ] **User-Agent Scrubbing**: Global removal of "Electron" tokens from the `User-Agent` string at the `app.on('ready')` stage.
+- _Reason_: Bypass WAF/Anti-Bot protections that block Electron-based requests during the ticket exchange phase.
 
-* [ ] **User-Agent Scrubbing**: Global removal of "Electron" tokens from the `User-Agent` string at the `app.on('ready')` stage.
-* *Reason*: Bypass WAF/Anti-Bot protections that block Electron-based requests during the ticket exchange phase.
-
-
-* [ ] **Automated CSP Injection**: Implement `onHeadersReceived` interceptor in the Main Process.
-* *Action*: Automatically append the backend API URL to the `connect-src` directive.
-* *Goal*: Provide a "Zero-Config" experience by preventing CSP violations without requiring users to manually edit `index.html`.
-
-
+- [done] ~~**Automated CSP Injection**: Implement `onHeadersReceived` interceptor in the Main Process.~~
+  - ~~_Action_: Automatically append the backend API URL to the `connect-src` directive.~~
+  - ~~_Goal_: Provide a "Zero-Config" experience by preventing CSP violations without requiring users to manually edit `index.html`.~~
 
 **3. Developer Experience (DX) & API**
 
-* [ ] **Enhanced Renderer API**: Refactor `getActions` to introduce a dedicated `authClient.bigio` namespace.
-* *Feature*: Implement `authClient.bigio.signIn({ provider: 'github' })` wrapper.
-* *Implementation*: Utilize `window.open` (intercepted by Main) or IPC to trigger the flow, keeping the API consistent with the official web client style.
+- [ ] **Enhanced Renderer API**: Refactor `getActions` to introduce a dedicated `authClient.bigio` namespace.
+- _Feature_: Implement `authClient.bigio.signIn({ provider: 'github' })` wrapper.
+- _Implementation_: Utilize `window.open` (intercepted by Main) or IPC to trigger the flow, keeping the API consistent with the official web client style.
 
-
-* [ ] **Smart Web Handoff UI (Optional/Next)**: Update the web-side confirmation page to detect and display the currently logged-in web user, offering a "Continue as [User]" button for a seamless transition.
-
+- [ ] **Smart Web Handoff UI (Optional/Next)**: Update the web-side confirmation page to detect and display the currently logged-in web user, offering a "Continue as [User]" button for a seamless transition.
 
 # @bigio/better-auth-electron
 
@@ -102,6 +96,28 @@ export const auth = betterAuth({
 
 Use `mainInjection` to setup IPC handlers and deep linking strategies. This automatically handles the "protocol" opening events.
 
+### Security & CSP Configuration
+
+** IMPORTANT: Clean up your `index.html`**
+
+This plugin automatically injects a rigorous, production-ready **Content Security Policy (CSP)** via the Main Process.
+
+**You CAN remove** any manual CSP `<meta>` tags from your `index.html` (renderer). Leaving them in will cause the browser to enforce the "intersection" of both policies, likely breaking your Auth flow (e.g., blocking the OAuth popup or API connection).
+
+**DELETE this from your `index.html`:**
+
+```html
+<meta
+  http-equiv="Content-Security-Policy"
+  content="
+  default-src 'self'; 
+  script-src 'self'; 
+  style-src 'self' 'unsafe-inline';
+  img-src 'self' data:;
+  connect-src 'self' http://localhost;
+  " />
+```
+
 ```typescript
 import { app, BrowserWindow } from 'electron'
 import { mainInjection } from '@bigio/better-auth-electron/main'
@@ -114,8 +130,14 @@ const { windowInjection, whenReadyInjection } = mainInjection({
   PROVIDERS: ['github', 'google'],
   BETTER_AUTH_BASEURL: 'http://localhost:3002',
   FRONTEND_URL: 'http://localhost:3001/oauth',
-  // Use the classic 'onBeforeRequest' filter approach for auth code capture if true
-  OLD_SCHOOL_ONBEFORE_WAY: false,
+  CONTENT_SECURITY_POLICY: '',
+  /**
+   * [Optional] Content Security Policy (CSP) Configuration
+   * * Strategy: "All-or-Nothing"
+   * - undefined (Default): The plugin automatically injects a secure, production-ready CSP (The "MVP" Fallback).
+   * - string: The plugin uses YOUR string exactly. No merging, no magic. You take full control.
+   */
+  CONTENT_SECURITY_POLICY: "default-src 'self'; ...", // override completely
 })
 
 function createWindow(): void {
@@ -132,6 +154,21 @@ app.whenReady().then(() => {
   whenReadyInjection()
   createWindow()
 })
+```
+
+**If CONTENT_SECURITY_POLICY is not provided, the plugin applies the following strictly secure rules to the Main Frame (index.html) automatically. This ensures Auth works out-of-the-box while keeping your app secure.**
+
+```http
+default-src 'self';
+script-src 'self';
+style-src 'self' 'unsafe-inline';
+# Allows loading images from 'self', OAuth providers (https:), and your Auth Server
+img-src 'self' data: blob: https: ${BETTER_AUTH_BASEURL};
+# Strictly restricts API connections to 'self' and your Auth Server
+connect-src 'self' ${BETTER_AUTH_BASEURL};
+font-src 'self' data:;
+# Prevents clickjacking attacks
+frame-ancestors 'none';
 ```
 
 ### 3. Web Client Initialization (`src/web/client.ts`)

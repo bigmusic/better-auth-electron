@@ -6,6 +6,7 @@ import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 import type { BrowserWindow } from 'electron'
 import { app, ipcMain, net, protocol, session, shell } from 'electron'
+import log from 'electron-log/main'
 import { atom } from 'nanostores'
 import z from 'zod'
 import type { ElectronMainPluginOptions } from '../options/electron-plugin-options'
@@ -18,6 +19,7 @@ import {
     safeTry,
 } from '../utils/electron-plugin-utils'
 
+log.initialize()
 const isInitializedAtom = atom(false)
 const deepLinkUrlAtom = atom<string | null>(null)
 const browserWindowAtom = atom<BrowserWindow | null>(null)
@@ -100,7 +102,9 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
         PROVIDERS,
         ELECTRON_APP_NAME,
         OLD_SCHOOL_ONBEFORE_WAY,
+        CONTENT_SECURITY_POLICY,
     } = config
+
     app.setName(ELECTRON_APP_NAME)
     app.setPath('userData', path.join(app.getPath('appData'), ELECTRON_APP_NAME))
     const {
@@ -370,6 +374,40 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
     }
 
     const whenReadyInjection = () => {
+        // CSP injection
+        session.defaultSession.webRequest.onHeadersReceived(
+            {
+                urls: [`${ELECTRON_SCHEME}://${ELECTRON_APP_HOST}/*`],
+            },
+            (details, callback) => {
+                if (details.resourceType === 'mainFrame') {
+                    const fallbackCSP = [
+                        "default-src 'self'",
+                        `script-src 'self'`,
+                        "style-src 'self' 'unsafe-inline'",
+                        `img-src 'self' data: blob: https: ${BETTER_AUTH_BASEURL}`,
+                        `connect-src 'self' ${BETTER_AUTH_BASEURL}`,
+                        "font-src 'self' data:",
+                        "frame-ancestors 'none'",
+                    ].join('; ')
+                    const responseHeaders = {
+                        ...details.responseHeaders,
+                        'Content-Security-Policy': [CONTENT_SECURITY_POLICY ?? fallbackCSP],
+                    }
+                    callback({
+                        responseHeaders: responseHeaders,
+                        cancel: false,
+                    })
+                    return
+                }
+
+                callback({
+                    responseHeaders: details.responseHeaders,
+                    cancel: false,
+                })
+                return
+            },
+        )
         if (OLD_SCHOOL_ONBEFORE_WAY) {
             session.defaultSession.webRequest.onBeforeSendHeaders(
                 {
