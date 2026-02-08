@@ -130,7 +130,6 @@ const { windowInjection, whenReadyInjection } = mainInjection({
   PROVIDERS: ['github', 'google'],
   BETTER_AUTH_BASEURL: 'http://localhost:3002',
   FRONTEND_URL: 'http://localhost:3001/oauth',
-  CONTENT_SECURITY_POLICY: '',
   /**
    * [Optional] Content Security Policy (CSP) Configuration
    * * Strategy: "All-or-Nothing"
