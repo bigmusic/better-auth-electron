@@ -17,9 +17,7 @@ import type { Atom } from 'nanostores'
 import { atom, onMount } from 'nanostores'
 import type { ElectronWebOptions } from '../options/electron-plugin-options'
 import { defatultWebOptions } from '../options/electron-plugin-options'
-import { BigIOError } from '../utils/electron-plugin-env'
-import { safeTry } from '../utils/electron-plugin-helper'
-import { SearchParamsZod } from '../utils/electron-plugin-utils'
+import { BigIOError, SearchParamsZod, safeTry } from '../utils/electron-plugin-utils'
 import { lazyClient } from './electron-web-clientHelper'
 
 type StandardAuthClient = ReturnType<typeof createAuthClient>

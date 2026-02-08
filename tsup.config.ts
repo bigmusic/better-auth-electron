@@ -16,6 +16,8 @@ export default defineConfig({
     clean: true,
     sourcemap: true,
     splitting: false,
+    treeshake: true,
+    metafile: true,
     external: [
         'electron',
         'better-auth',
@@ -24,13 +26,6 @@ export default defineConfig({
         'react',
         'react-dom',
     ],
-    noExternal: [
-        '@nanostores/react',
-        '@oslojs/encoding',
-        'electron-log',
-        'jotai',
-        'nanostores',
-        'zod',
-    ],
+    noExternal: ['@nanostores/react', '@oslojs/encoding', 'electron-log', 'nanostores'],
     minify: false,
 })

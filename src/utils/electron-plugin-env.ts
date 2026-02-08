@@ -1,30 +1,10 @@
-// utils/env.ts
+// utils/electron-plugin-env.ts
 /** biome-ignore-all lint/style/useConsistentTypeDefinitions: <> */
+import type { IpcRenderer, WebFrame, WebUtils } from 'electron'
 
-export class BigIOError extends Error {
-    public readonly bigioErrorStack: unknown[]
-
-    constructor(message: string, options: { cause?: unknown; bigioErrorStack?: unknown[] }) {
-        super(message, { cause: options.cause })
-        this.name = 'BigIOError'
-        this.bigioErrorStack = options.bigioErrorStack || []
-
-        Object.setPrototypeOf(this, new.target.prototype)
-        Object.defineProperty(this, 'bigioErrorStack', { enumerable: false })
-        if (Error.captureStackTrace) {
-            Error.captureStackTrace(this, this.constructor)
-        }
-    }
-    toJSON() {
-        return {
-            name: this.name,
-            message: this.message,
-            stack: this.stack,
-            cause: this.cause,
-            bigioErrorStack: this.bigioErrorStack,
-        }
-    }
-}
+type Prettify<T> = {
+    [K in keyof T]: T[K]
+} & {}
 declare const process:
     | {
           env: {
@@ -42,6 +22,7 @@ declare global {
         readonly DEV: boolean
         readonly PROD: boolean
         readonly SSR: boolean
+
         [key: string]: unknown
     }
 
@@ -50,6 +31,101 @@ declare global {
     }
 }
 
+declare global {
+    interface Window {
+        electron: {
+            webUtils: Prettify<WebUtils>
+            webFrame: Prettify<WebFrame>
+            process: Prettify<SafeProcess>
+            ipcRenderer: Prettify<IpcRenderer>
+        }
+    }
+}
+type SafeProcess = {
+    readonly platform: NodeJS.Platform
+    readonly versions: NodeJS.ProcessVersions
+    readonly env: NodeJS.ProcessEnv
+}
+
+type ElectronWindow = Window & {
+    electron: {
+        webUtils: Prettify<WebUtils>
+        webFrame: Prettify<WebFrame>
+        process: Prettify<SafeProcess>
+        ipcRenderer: Prettify<IpcRenderer>
+    }
+}
+const getGlobal = () => {
+    if (typeof globalThis !== 'undefined') {
+        return globalThis
+    }
+    if (typeof self !== 'undefined') {
+        return self
+    }
+    if (typeof window !== 'undefined') {
+        return window
+    }
+    if (typeof global !== 'undefined') {
+        return global
+    }
+    throw new Error('unable to locate global object')
+}
+const globals = getGlobal()
+// function requireSetCookies(headers: Headers) {
+//     if (typeof headers.getSetCookie !== 'function') {
+//         throw new BigIOError('Environment Error: headers.getSetCookie is not a function.', {
+//             bigioErrorStack: [
+//                 {
+//                     msg: 'Outdated Node.js Environment',
+//                     ctx: `'Please upgrade NodeJS to 18.14+`,
+//                 },
+//             ],
+//         })
+//     }
+
+//     const setCookieHeader = headers.getSetCookie()
+//     if (!setCookieHeader || setCookieHeader.length === 0) {
+//         const headerKeys = Array.from(headers.keys()).join(', ')
+//         throw new APIError('INTERNAL_SERVER_ERROR', {
+//             message: 'Critical: No Set-Cookie headers received from provider',
+//             debugInfo: { availableHeaders: headerKeys },
+//         })
+//     }
+//     return setCookieHeader
+// }
+export function isElectronWindow(window: Window | typeof globalThis): window is ElectronWindow {
+    if (typeof window !== 'undefined') {
+        if (
+            typeof navigator !== 'undefined' &&
+            'userAgent' in navigator &&
+            navigator.userAgent.toLowerCase().includes(' electron/')
+        ) {
+            return true
+        }
+        if ('electron' in window && typeof window.electron !== 'undefined') {
+            return true
+        }
+    }
+    return false
+}
+const getEnv = () => {
+    if (typeof window !== 'undefined') {
+        if (isElectronWindow(globals)) {
+            return 'ELECTRON_RENDERER'
+        }
+        return 'BROWSER'
+    }
+    if (globalThis === self) {
+        return 'WORKER'
+    }
+    if (typeof global !== 'undefined' && typeof process !== 'undefined') {
+        if (typeof process.versions?.electron !== 'undefined') {
+            return 'ELECTRON_MAIN'
+        }
+        return 'NODE'
+    }
+    return 'UNKNOWN'
+}
 const getRawNodeEnv = (): string => {
     if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.MODE) {
         return import.meta.env.MODE
@@ -69,53 +145,11 @@ export const IS_DEV = RAW_ENV === 'development'
 export const IS_PROD = RAW_ENV === 'production'
 export const IS_TEST = RAW_ENV === 'test'
 
-export const consoleError = (
-    originalError: unknown,
-    message?: string,
-    bigioErrorStack?: unknown[],
-) => {
-    if (!IS_DEV) {
-        return
-    }
-    if (message && bigioErrorStack) {
-        console.groupCollapsed(`[BigIOError]`)
-        console.error('[BigIOError] message: ', message)
-        if (Array.isArray(bigioErrorStack) && bigioErrorStack.length > 0) {
-            console.log('[BigIOError] Stack Trace Table: ')
-            console.table(bigioErrorStack)
-        }
-        console.error('[BigIOError] Original Error: ', originalError)
-        console.groupEnd()
-    } else if (originalError instanceof BigIOError) {
-        console.groupCollapsed(`[BigIOError]`)
-        console.error('[BigIOError] message: ', originalError.message)
-        if (
-            Array.isArray(originalError.bigioErrorStack) &&
-            originalError.bigioErrorStack.length > 0
-        ) {
-            console.log('[BigIOError] Stack Trace Table: ')
-            console.table(originalError.bigioErrorStack)
-        }
-        console.error('[BigIOError] Original Error: ', originalError.cause)
-        console.groupEnd()
-    } else {
-        console.groupCollapsed(`[Error]`)
-        console.error('[Error]: ', originalError)
-        console.groupEnd()
-    }
-}
-export const consoleLog = (...argv: unknown[]): void => {
-    if (IS_DEV) {
-        console.log(...argv)
-    }
-}
-
 export const IS_ELECTRON_PACKAGED = (() => {
     // biome-ignore lint/complexity/useOptionalChain: <>
     if (typeof process !== 'undefined' && process.versions && process.versions.electron) {
         try {
-            const { app } = require('electron')
-            return app.isPackaged
+            return require('electron').app.isPackaged
         } catch {
             return false
         }

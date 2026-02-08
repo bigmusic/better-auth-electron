@@ -1,28 +1,57 @@
 // root/src/main/electron-plugin-main.ts
 
-import {
-    existsSync,
-    promises as fs,
-    readFileSync,
-    statSync,
-    unlinkSync,
-    writeFileSync,
-} from 'node:fs'
-import path, { join } from 'node:path'
+import { existsSync, promises, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import path from 'node:path'
 import process from 'node:process'
 import { pathToFileURL } from 'node:url'
 import type { BrowserWindow } from 'electron'
 import { app, ipcMain, net, protocol, session, shell } from 'electron'
-import log from 'electron-log'
-import { atom, createStore } from 'jotai/vanilla'
+import { atom } from 'nanostores'
 import z from 'zod'
 import type { ElectronMainPluginOptions } from '../options/electron-plugin-options'
 import { defaultMainPluginOptions } from '../options/electron-plugin-options'
-import { BigIOError } from '../utils/electron-plugin-env'
-import { okOr, safeTry } from '../utils/electron-plugin-helper'
-import { pkceGenerateChallenge, pkceGenerateVerifier } from '../utils/electron-plugin-utils'
+import {
+    BigIOError,
+    okOr,
+    pkceGenerateChallenge,
+    pkceGenerateVerifier,
+    safeTry,
+} from '../utils/electron-plugin-utils'
 
-log.initialize()
+const isInitializedAtom = atom(false)
+const deepLinkUrlAtom = atom<string | null>(null)
+const browserWindowAtom = atom<BrowserWindow | null>(null)
+
+const getMainWindow = () => {
+    const mainWindow = browserWindowAtom.get()
+    if (mainWindow?.isDestroyed()) {
+        browserWindowAtom.set(null)
+    }
+    return browserWindowAtom.get()
+}
+
+const setMainWindow = (nextWindow: BrowserWindow | null) => {
+    if (!nextWindow) {
+        browserWindowAtom.set(null)
+        return
+    }
+    if (nextWindow.isDestroyed()) {
+        browserWindowAtom.set(null)
+        return
+    }
+    const currentWindow = browserWindowAtom.get()
+    if (currentWindow === nextWindow) {
+        return
+    }
+
+    browserWindowAtom.set(nextWindow)
+
+    nextWindow.once('closed', () => {
+        if (browserWindowAtom.get() === nextWindow) {
+            browserWindowAtom.set(null)
+        }
+    })
+}
 
 const popUpWindow = (win: BrowserWindow) => {
     if (win.isMinimized()) {
@@ -35,63 +64,12 @@ const popUpWindow = (win: BrowserWindow) => {
 
     win.focus()
 }
-const _mainPluginStore = createStore()
-const _electronMainDeepLinkURLStoreAtom = atom<string | null>(null)
-const setDeepLinkURL = (deepLinkURL: string | null) =>
-    _mainPluginStore.set(_electronMainDeepLinkURLStoreAtom, deepLinkURL)
-const getDeepLinkURL = () => _mainPluginStore.get(_electronMainDeepLinkURLStoreAtom)
-const _electronMainBrowserWindowAtom = atom<BrowserWindow | null>(null)
-const _safeGetMainWindowAtom = atom(null, (get, set) => {
-    const mainWindow = get(_electronMainBrowserWindowAtom)
-    if (mainWindow?.isDestroyed()) {
-        set(_electronMainBrowserWindowAtom, null)
-        return null
-    }
-    return mainWindow
-})
-
-const getMainWindow = () => _mainPluginStore.set(_safeGetMainWindowAtom)
-
-const _safeSetMainWindowAtom = atom(null, (get, set, nextWindow: BrowserWindow | null) => {
-    if (!nextWindow) {
-        return set(_electronMainBrowserWindowAtom, null)
-    }
-    if (nextWindow.isDestroyed()) {
-        if (process.env.NODE_ENV === 'development') {
-            console.warn('[BigIO] setWindow received a destroyed window. Resetting to null.')
-        }
-        return set(_electronMainBrowserWindowAtom, null)
-    }
-    const currentWindow = get(_electronMainBrowserWindowAtom)
-
-    if (currentWindow === nextWindow) {
-        return
-    }
-
-    set(_electronMainBrowserWindowAtom, nextWindow)
-
-    nextWindow.once('closed', () => {
-        const latest = get(_electronMainBrowserWindowAtom)
-        if (latest === nextWindow) {
-            set(_electronMainBrowserWindowAtom, null)
-        }
-    })
-})
-
-const setMainWindow = (nextWindow: BrowserWindow | null) =>
-    _mainPluginStore.set(_safeSetMainWindowAtom, nextWindow)
-
-const _isInitializedAtom = atom(false)
-const setIsInit = () => _mainPluginStore.set(_isInitializedAtom, true)
-const getIsInit = () => _mainPluginStore.get(_isInitializedAtom)
-
 const verifierZod = z.object({
     verifier: z.string(),
     expiresAt: z.number(),
 })
 export const mainInjection = (options?: ElectronMainPluginOptions) => {
-    log.info('mainInjection')
-    if (getIsInit()) {
+    if (isInitializedAtom.get()) {
         return {
             windowInjection: (mainWindow: BrowserWindow) => null,
             whenReadyInjection: () => null,
@@ -137,6 +115,7 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
     }
     const RENDERER_ROOT = path.resolve(app.getAppPath(), ELECTRON_RENDERER_PATH)
     const PROTOCOL_SCHEME = protocolScheme ?? ELECTRON_SCHEME
+
     if (isOAuth) {
         const isPrimaryInstance = app.requestSingleInstanceLock()
         if (!isPrimaryInstance) {
@@ -147,11 +126,9 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
 
     const getElectronVerifier = () => {
         const userDataPath = app.getPath('userData')
-        log.info('userDataPath', userDataPath)
         const storagePath = path.join(userDataPath, ELECTRON_VERIFIER_FILE_NAME)
-        log.info('storagePath', storagePath)
 
-        const TTL = 1000 * 60 * 2
+        const TTL_SEC = 1000 * 60 * 2
         const writeVerifier = () => {
             const newVerifier = pkceGenerateVerifier(ELECTRON_VERIFIER_LENGTH)
             const writeResult = safeTry(() => {
@@ -159,18 +136,13 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
                     storagePath,
                     JSON.stringify({
                         verifier: newVerifier,
-                        expiresAt: Date.now() + TTL,
+                        expiresAt: Date.now() + TTL_SEC,
                     }),
                     'utf-8',
                 )
                 return true
             })
-            if (writeResult.error) {
-                log.error(
-                    '[BigIO] Failed to persist verifier (Disk Error), continuing in-memory:',
-                    writeResult.error,
-                )
-            }
+
             return newVerifier
         }
         const { data: verifier, error } = safeTry(() => {
@@ -179,14 +151,9 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
                 const data = JSON.parse(raw)
                 const now = Date.now()
                 const safeData = verifierZod.parse(data)
-                log.info('safeData', safeData)
-                const expireTime = safeData.expiresAt
-                // 只有在有效期內才恢復
-                if (now < expireTime) {
-                    log.info('[BigIO] ♻️ Restored PKCE Verifier from disk (Cold Start Ready)')
+                if (now < safeData.expiresAt) {
                     return safeData.verifier
                 }
-                log.info('[BigIO] 🗑️ Verifier expired, cleaning up...')
                 safeTry(() => {
                     unlinkSync(storagePath)
                     return true
@@ -199,7 +166,6 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
         })
         if (!verifier || error) {
             if (error) {
-                log.warn('[BigIO] Failed to restore verifier, resetting:', error)
                 safeTry(() => {
                     unlinkSync(storagePath)
                     return true
@@ -207,7 +173,6 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
             }
             return writeVerifier()
         }
-        log.info(verifier)
 
         return verifier
     }
@@ -247,9 +212,9 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
                 deepLinkURL: deepLinkURL,
                 verifier: getElectronVerifier(),
             })
-            setDeepLinkURL(null)
+            deepLinkUrlAtom.set(null)
         } else {
-            setDeepLinkURL(deepLinkURL)
+            deepLinkUrlAtom.set(deepLinkURL)
         }
     }
     // for macos deeplink
@@ -266,9 +231,7 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
         const coldStartUrl = process.argv.find((arg) => arg.startsWith(`${ELECTRON_SCHEME}://`))
 
         if (coldStartUrl) {
-            console.log('[DeepLink] Windows Cold Start:', coldStartUrl)
-
-            setDeepLinkURL(coldStartUrl)
+            deepLinkUrlAtom.set(coldStartUrl)
         }
     }
 
@@ -281,15 +244,13 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
 
     ipcMain.removeAllListeners(APP_MOUNTED_EVENT_NAME)
     ipcMain.on(APP_MOUNTED_EVENT_NAME, (event) => {
-        const deepLinkURL = getDeepLinkURL()
+        const deepLinkURL = deepLinkUrlAtom.get()
         if (deepLinkURL) {
-            log.info('[BigIO] 前端已就緒，發送冷啟動緩存:', deepLinkURL)
-
             event.sender.send(DEEPLINK_EVENT_NAME, {
                 deepLinkURL: deepLinkURL,
                 verifier: getElectronVerifier(),
             })
-            setDeepLinkURL(null)
+            deepLinkUrlAtom.set(null)
         }
     })
     ipcMain.removeHandler(GET_COOKIES_EVENT_NAME)
@@ -301,8 +262,6 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
             }),
             true,
         )
-        log.info(debugData)
-        log.info(Date.now())
     })
     ipcMain.removeHandler(CLEAR_COOKIES_EVENT_NAME)
     ipcMain.handle(CLEAR_COOKIES_EVENT_NAME, async (event) => {
@@ -315,12 +274,11 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
         const leftover = await safeTry(callingSession.cookies.get({}))
 
         if (clearCookie.error || leftover.error) {
-            log.error('Failed to clear Cookies with throw Error')
             return { success: false }
         }
         if (leftover.data && Array.isArray(leftover.data) && leftover.data.length > 0) {
             for (const c of leftover.data) {
-                log.error(`Failed to clear Cookies - ${c.domain} ${c.name}`)
+                // log.error(`Failed to clear Cookies - ${c.domain} ${c.name}`)
             }
             return { success: false }
         }
@@ -329,8 +287,6 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
         }
     })
     const windowInjection = (mainWindow: BrowserWindow) => {
-        log.info('windowInjection')
-
         setMainWindow(mainWindow)
 
         mainWindow.webContents.setWindowOpenHandler((details) => {
@@ -414,8 +370,6 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
     }
 
     const whenReadyInjection = () => {
-        log.info('whenReadyInjection')
-
         if (OLD_SCHOOL_ONBEFORE_WAY) {
             session.defaultSession.webRequest.onBeforeSendHeaders(
                 {
@@ -448,7 +402,6 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
                                 url: BETTER_AUTH_BASEURL,
                             }),
                         )
-                        log.info(debugData)
                     }
 
                     if (!(newHeaders.Cookie || newHeaders.cookie)) {
@@ -468,7 +421,6 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
                         const sessionCookiesString = sessionCookies
                             .map((c) => `${c.name}=${c.value}`)
                             .join('; ')
-                        log.info('⚠️ [Main] 檢測到瀏覽器未攜帶 Cookie，正在執行手動注入...')
                         newHeaders.Cookie = sessionCookiesString
                     }
 
@@ -484,7 +436,7 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
         } else {
             const getStaticPath = async (basePath: string, indexFile?: string) => {
                 try {
-                    const result = await fs.stat(basePath)
+                    const result = await promises.stat(basePath)
                     if (result.isFile()) {
                         return basePath
                     }
@@ -499,7 +451,6 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
                 // biome-ignore lint/nursery/noUselessUndefined: <>
                 return undefined
             }
-            // bigio electron plugin
             protocol.handle(PROTOCOL_SCHEME, async (request) => {
                 const { hostname, pathname } = new URL(request.url)
 
@@ -550,7 +501,7 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
             })
         }
     }
-    setIsInit()
+    isInitializedAtom.set(true)
     return {
         windowInjection: windowInjection,
         whenReadyInjection: whenReadyInjection,

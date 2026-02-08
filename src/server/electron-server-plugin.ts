@@ -1,8 +1,6 @@
 // root/packages/better-auth-electron/src/server/electron-server-plugin.ts
-// import 'dotenv/config'
 import fs from 'node:fs'
 import path from 'node:path'
-import process from 'node:process'
 import { fileURLToPath } from 'node:url'
 import type { BetterAuthPlugin } from 'better-auth'
 import {
@@ -11,16 +9,19 @@ import {
     createAuthMiddleware,
     sessionMiddleware,
 } from 'better-auth/api'
-import { z } from 'zod'
+import z from 'zod'
 import type { ElectronServerPluginOptions } from '../options/electron-plugin-options'
 import { defaultServerPluginOptions } from '../options/electron-plugin-options'
-import { BigIOError, consoleError, consoleLog } from '../utils/electron-plugin-env'
-import { okOr, safeTry } from '../utils/electron-plugin-helper'
 import {
+    BigIOError,
+    consoleError,
+    consoleLog,
     decryptTicket,
     encryptTicket,
+    okOr,
     pkceGenerateChallenge,
     SearchParamsZod,
+    safeTry,
 } from '../utils/electron-plugin-utils'
 
 // ==========================================

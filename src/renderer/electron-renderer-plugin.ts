@@ -1,22 +1,25 @@
 // root/packages/better-auth-electron/client/better-auth/electron-renderer-plugin.ts
 
 import type { BetterAuthClientPlugin, Session, User } from 'better-auth'
-import { createStore, atom as jotaiAtom } from 'jotai/vanilla'
 import { atom } from 'nanostores'
 import z from 'zod'
 import type { ElectronRendererPluginOptions } from '../options/electron-plugin-options'
 import { defaultRendererPluginOptions } from '../options/electron-plugin-options'
 import type { electronServerPlugin } from '../server/electron-server-plugin'
-import { BigIOError, consoleError, consoleLog } from '../utils/electron-plugin-env'
-import { safeTry } from '../utils/electron-plugin-helper'
-import { isElectronWindow, pkceGenerateChallenge } from '../utils/electron-plugin-utils'
+import { isElectronWindow } from '../utils/electron-plugin-env'
+import {
+    BigIOError,
+    consoleError,
+    consoleLog,
+    pkceGenerateChallenge,
+    safeTry,
+} from '../utils/electron-plugin-utils'
 
 type ExchangeResult = {
     session: Pick<Session, 'createdAt' | 'updatedAt' | 'expiresAt'>
     user: User
 }
 // Extend the Window interface to include our custom property
-
 const LOCK_NAME_IN_WINDOW = '__BIGIO_BETTER_AUTH_ELECTRON_ATTACHED__'
 
 const checkAndSetGlobalLock = (): boolean => {
@@ -27,68 +30,32 @@ const checkAndSetGlobalLock = (): boolean => {
     win[LOCK_NAME_IN_WINDOW] = true
     return false
 }
-// =================================================================
-// Module Level Internal State Machine
-// =================================================================
-const _rendererPluginStore = createStore()
 
-// IPC Listener Lock Atom
-const _ipcDeepLinkAtom = jotaiAtom(false)
-const ipcDeepLinkAttached = () => _rendererPluginStore.set(_ipcDeepLinkAtom, true)
-const isIpcDeepLinkAttached = () => _rendererPluginStore.get(_ipcDeepLinkAtom)
-
-const _abortSignalAtom = jotaiAtom<AbortController | null>(null)
-const _ensureFreshSignalAtom = jotaiAtom(null, (get, set) => {
-    const currentAbortSignal = get(_abortSignalAtom)
+const ipcDeepLinkAtom = atom(false)
+const abortSignalAtom = atom<AbortController | null>(null)
+const ensureFreshSignal = () => {
+    const currentAbortSignal = abortSignalAtom.get()
     if (currentAbortSignal) {
         currentAbortSignal.abort()
     }
     const newAbortSignal = new AbortController()
-    set(_abortSignalAtom, newAbortSignal)
+    abortSignalAtom.set(newAbortSignal)
     return newAbortSignal.signal
-})
-const ensureFreshSignal = () => _rendererPluginStore.set(_ensureFreshSignalAtom)
-
-const _isPluginReadyAtom = jotaiAtom(false)
-const setIsPluginReady = () => _rendererPluginStore.set(_isPluginReadyAtom, true)
-const getIsPluginReady = () => _rendererPluginStore.get(_isPluginReadyAtom)
-
-// appMounted Lock
-const _appMountedAtom = jotaiAtom(false)
-const setAppMounted = () => _rendererPluginStore.set(_appMountedAtom, true)
-const getAppMounted = () => _rendererPluginStore.get(_appMountedAtom)
-
-// sessionData Store
-const _resultFromDeepLinkAtom = jotaiAtom<ExchangeResult | Error | null>(null)
-const setResult = (data: ExchangeResult | Error | null) =>
-    _rendererPluginStore.set(_resultFromDeepLinkAtom, data)
-const getResult = () => _rendererPluginStore.get(_resultFromDeepLinkAtom)
-
-// fn atom
-const _onDeepLinkSuccessFnAtom =
-    jotaiAtom<ElectronRendererPluginOptions['onDeepLinkSuccessFn']>(undefined)
-
-const setOnDeepLinkSuccessFn = (fn: ElectronRendererPluginOptions['onDeepLinkSuccessFn']) => {
-    if (fn) {
-        _rendererPluginStore.set(_onDeepLinkSuccessFnAtom, () => fn)
-    }
 }
-const getOnDeepLinkSuccessFn = () => _rendererPluginStore.get(_onDeepLinkSuccessFnAtom)
-const _onDeepLinkFailedFnAtom =
-    jotaiAtom<ElectronRendererPluginOptions['onDeepLinkFailedFn']>(undefined)
-const setOnDeepLinkFailedFn = (fn: ElectronRendererPluginOptions['onDeepLinkFailedFn']) => {
-    if (fn) {
-        _rendererPluginStore.set(_onDeepLinkFailedFnAtom, () => fn)
-    }
-}
-const getDeepLinkFailedFn = () => _rendererPluginStore.get(_onDeepLinkFailedFnAtom)
+
+const isPluginReadyAtom = atom(false)
+const appMountedAtom = atom(false)
+const resultFromDeepLinkAtom = atom<ExchangeResult | Error | null>(null)
+const onDeepLinkSuccessFnAtom =
+    atom<ElectronRendererPluginOptions['onDeepLinkSuccessFn']>(undefined)
+
+const onDeepLinkFailedFnAtom = atom<ElectronRendererPluginOptions['onDeepLinkFailedFn']>(undefined)
 
 export const electronRendererPlugin = (
     electronRendererPluginOptions: ElectronRendererPluginOptions,
 ) => {
     const config = { ...defaultRendererPluginOptions, ...electronRendererPluginOptions }
     const {
-        // betterAuthClient,
         refetchSessionOnFocus,
         ELECTRON_SCHEME,
         ELECTRON_CALLBACK_HOST_PATH,
@@ -103,10 +70,10 @@ export const electronRendererPlugin = (
         // ELECTRON_APP_HOST,
     } = config
     if (typeof onDeepLinkSuccessFn === 'function') {
-        setOnDeepLinkSuccessFn(onDeepLinkSuccessFn)
+        onDeepLinkSuccessFnAtom.set(onDeepLinkSuccessFn)
     }
     if (typeof onDeepLinkFailedFn === 'function') {
-        setOnDeepLinkFailedFn(onDeepLinkFailedFn)
+        onDeepLinkFailedFnAtom.set(onDeepLinkFailedFn)
     }
     function sendAppMounted() {
         if (!isElectronWindow(window)) {
@@ -117,12 +84,7 @@ export const electronRendererPlugin = (
     return {
         id: 'bigio-electron-renderer-plugin',
         $InferServerPlugin: {} as ReturnType<typeof electronServerPlugin>,
-        getAtoms: ($fetch) => {
-            const myAtom = atom<null>(null)
-            return {
-                myAtom: myAtom,
-            }
-        },
+
         getActions: function ($fetch, $store, options) {
             if (!isElectronWindow(window)) {
                 return {
@@ -132,7 +94,7 @@ export const electronRendererPlugin = (
                     },
                 }
             }
-            if (!(checkAndSetGlobalLock() || getIsPluginReady())) {
+            if (!(checkAndSetGlobalLock() || isPluginReadyAtom.get())) {
                 consoleLog('[Better-Auth-Electron] Initializing IPC Listeners...')
 
                 if (refetchSessionOnFocus) {
@@ -146,7 +108,7 @@ export const electronRendererPlugin = (
                         { signal: focusEventAbortSignal },
                     )
                 }
-                if (!isIpcDeepLinkAttached()) {
+                if (!ipcDeepLinkAtom.get()) {
                     const dataFromMainZod = z.object({
                         deepLinkURL: z.string().min(1),
                         verifier: z.string().min(1),
@@ -221,14 +183,14 @@ export const electronRendererPlugin = (
                             )
                             console.log(dataError)
 
-                            const onFailedFn = getDeepLinkFailedFn()
+                            const onFailedFn = onDeepLinkFailedFnAtom.get()
                             if (!readyData && dataError) {
                                 if (
                                     lazySignalUIReadyForFn &&
                                     (typeof onDeepLinkSuccessFn === 'function' ||
                                         typeof onDeepLinkFailedFn === 'function')
                                 ) {
-                                    setResult(dataError)
+                                    resultFromDeepLinkAtom.set(dataError)
                                 }
                                 if (onFailedFn) {
                                     // this is async fn,prevent fake async fn that return promise
@@ -282,7 +244,7 @@ export const electronRendererPlugin = (
                                     (typeof onDeepLinkSuccessFn === 'function' ||
                                         typeof onDeepLinkFailedFn === 'function')
                                 ) {
-                                    setResult(bigIOError)
+                                    resultFromDeepLinkAtom.set(bigIOError)
                                 }
                                 if (onFailedFn) {
                                     // this is async fn,prevent fake async fn that return promise
@@ -307,9 +269,9 @@ export const electronRendererPlugin = (
                                 (typeof onDeepLinkSuccessFn === 'function' ||
                                     typeof onDeepLinkFailedFn === 'function')
                             ) {
-                                setResult(userSession)
+                                resultFromDeepLinkAtom.set(userSession)
                             }
-                            const onSuccessFn = getOnDeepLinkSuccessFn()
+                            const onSuccessFn = onDeepLinkSuccessFnAtom.get()
                             if (onSuccessFn) {
                                 // this is async fn,prevent fake async fn that return promise
                                 // fire and forget
@@ -329,7 +291,7 @@ export const electronRendererPlugin = (
                             return
                         },
                     )
-                    ipcDeepLinkAttached()
+                    ipcDeepLinkAtom.set(true)
                 }
 
                 // Tell main app is ready handle the coldstart
@@ -339,13 +301,13 @@ export const electronRendererPlugin = (
                     typeof onDeepLinkSuccessFn === 'function' ||
                     typeof onDeepLinkFailedFn === 'function'
                 ) {
-                    setAppMounted()
+                    appMountedAtom.set(true)
                     sendAppMounted()
                 }
             }
 
             // Lock it
-            setIsPluginReady()
+            isPluginReadyAtom.set(true)
             return {
                 bigio: {
                     onDeepLinkSuccess: (
@@ -355,20 +317,20 @@ export const electronRendererPlugin = (
                             return
                         }
                         if (typeof fn === 'function') {
-                            setOnDeepLinkSuccessFn(fn)
+                            onDeepLinkSuccessFnAtom.set(fn)
                         }
                         if (lazySignalUIReadyForFn) {
-                            if (!getAppMounted()) {
-                                setAppMounted()
+                            if (!appMountedAtom.get()) {
+                                appMountedAtom.set(true)
                                 sendAppMounted()
                                 return
                             }
-                            const result = getResult()
+                            const result = resultFromDeepLinkAtom.get()
                             if (!(result instanceof Error) && result && fn) {
                                 safeTry(
                                     async () => {
                                         await fn(result)
-                                        setResult(null)
+                                        resultFromDeepLinkAtom.set(null)
                                     },
                                     new BigIOError('Failed at lazy onSuccessFn', {
                                         bigioErrorStack: [
@@ -387,20 +349,20 @@ export const electronRendererPlugin = (
                             return
                         }
                         if (typeof fn === 'function') {
-                            setOnDeepLinkFailedFn(fn)
+                            onDeepLinkFailedFnAtom.set(fn)
                         }
                         if (lazySignalUIReadyForFn) {
-                            if (!getAppMounted()) {
-                                setAppMounted()
+                            if (!appMountedAtom.get()) {
+                                appMountedAtom.set(true)
                                 sendAppMounted()
                                 return
                             }
-                            const result = getResult()
+                            const result = resultFromDeepLinkAtom.get()
                             if (result instanceof Error && fn) {
                                 safeTry(
                                     async () => {
                                         await fn(result)
-                                        setResult(null)
+                                        resultFromDeepLinkAtom.set(null)
                                     },
                                     new BigIOError('Failed at lazy onFailedFn', {
                                         bigioErrorStack: [

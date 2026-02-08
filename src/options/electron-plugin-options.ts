@@ -4,7 +4,7 @@ import type { BetterAuthClientOptions, Session, User } from 'better-auth'
 import type { AuthClient } from 'better-auth/client'
 import type { BrowserWindow } from 'electron'
 // import { renderOAuthPage } from '../preact/electron-login'
-import type { BigIOError } from '../utils/electron-plugin-env'
+// import type { BigIOError } from '../utils/electron-plugin-env'
 
 export type ElectronServerPluginOptions = {
     /**
