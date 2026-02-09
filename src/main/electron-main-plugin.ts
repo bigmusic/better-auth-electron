@@ -105,6 +105,7 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
         CONTENT_SECURITY_POLICY,
     } = config
 
+    // this is a global app name effect OS path
     app.setName(ELECTRON_APP_NAME)
     app.setPath('userData', path.join(app.getPath('appData'), ELECTRON_APP_NAME))
     const {

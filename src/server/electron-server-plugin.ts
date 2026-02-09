@@ -139,7 +139,11 @@ export const electronServerPlugin = (options: ElectronServerPluginOptions) => {
                             if (!dummyURL.pathname.includes(WEB_OAUTH_SIGNIN_CALLBACK_PATHNAME)) {
                                 return false
                             }
-
+                            const setCookieHeader = safeTry(
+                                () => requireSetCookies(responseHeaders),
+                                true,
+                            )
+                            responseHeaders.delete('set-cookie')
                             // -- is electron oauth,so if something got wrong, will short circuit --
 
                             const searchParams = safeTry(
@@ -170,11 +174,6 @@ export const electronServerPlugin = (options: ElectronServerPluginOptions) => {
                                     message: 'Invalid scheme in url',
                                 })
                             }
-
-                            const setCookieHeader = safeTry(
-                                () => requireSetCookies(responseHeaders),
-                                true,
-                            )
 
                             const tokenMatch = okOr(
                                 setCookieHeader

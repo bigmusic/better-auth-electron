@@ -1,20 +1,10 @@
 // root/packages/better-auth-electron/src/web/electron-web-plugin.ts
 
 import { useStore } from '@nanostores/react'
-import type {
-    BetterAuthClientPlugin,
-    BetterAuthError,
-    Prettify,
-    SessionQueryParams,
-} from 'better-auth'
-import type {
-    BetterFetch,
-    BetterFetchError,
-    BetterFetchOption,
-    createAuthClient,
-} from 'better-auth/client'
+import type { BetterAuthClientPlugin, SessionQueryParams } from 'better-auth'
+import type { BetterFetch, BetterFetchError, createAuthClient } from 'better-auth/client'
 import type { Atom } from 'nanostores'
-import { atom, onMount } from 'nanostores'
+import { atom } from 'nanostores'
 import type { ElectronWebOptions } from '../options/electron-plugin-options'
 import { defatultWebOptions } from '../options/electron-plugin-options'
 import { BigIOError, SearchParamsZod, safeTry } from '../utils/electron-plugin-utils'
@@ -33,7 +23,6 @@ const checkAndSetGlobalLock = (): boolean => {
     win[LOCK_NAME_IN_WINDOW] = true
     return false
 }
-// const isLoaded = atom(false)
 
 export const electronWebHandoffPlugin = <
     T extends {
@@ -71,40 +60,32 @@ export const electronWebHandoffPlugin = <
         BACKEND_FAST_TICKET_URL,
     } = config
     const electronWebAtoms = ($fetch: BetterFetch) => {
-        const handoffStatus = atom<'idle' | 'connecting' | 'succeed' | 'failed'>('idle')
-        const handoffMessage = atom<{
-            msg: 'idle' | 'succeed' | 'failed'
-            ctx?: unknown
-        }>({
-            msg: 'idle',
-        })
-        const myAtom = atom<null>(null)
+        const handoffError = atom<string | null>(null)
+        const handoffStatus = atom<'idle' | 'pending' | 'connecting' | 'succeed' | 'failed'>('idle')
+        const fastLogin = atom<boolean | null>(null)
         return {
+            handoffError: handoffError,
             handoffStatus: handoffStatus,
-            handoffMessage: handoffMessage,
-            myAtom: myAtom,
+            fastLogin: fastLogin,
         }
     }
     type ElectronWebAtoms = ReturnType<typeof electronWebAtoms>
 
     return {
-        id: 'electron-web-handoff',
-
+        id: 'bigio-electron-webhandoff-plugin',
         getAtoms: ($fetch) => electronWebAtoms($fetch),
-
         getActions: ($fetch, $store) => {
-            console.log('getActions')
             const sessionAtom = $store.atoms.session as Atom<UseSessionData>
 
-            const { handoffStatus, handoffMessage } = $store.atoms as unknown as ElectronWebAtoms
+            const { handoffStatus, handoffError, fastLogin } =
+                $store.atoms as unknown as ElectronWebAtoms
+
             const handoffLogic = () => {
-                console.log('handoffLogic')
-                const { data: sessionData, isPending, isRefetching, error } = sessionAtom.get()
-                if (isPending || isRefetching || error) {
+                if (handoffStatus.get() !== 'idle' && handoffStatus.get() !== 'pending') {
                     return
                 }
-
-                if (handoffStatus.get() !== 'idle') {
+                const { data: sessionData, isPending, isRefetching, error } = sessionAtom.get()
+                if (isPending || isRefetching || error) {
                     return
                 }
 
@@ -114,11 +95,8 @@ export const electronWebHandoffPlugin = <
                     return
                 }
                 if (scheme !== ELECTRON_SCHEME) {
-                    handoffMessage.set({
-                        msg: 'failed',
-                        ctx: `Wrong Scheme: ${scheme}`,
-                    })
                     handoffStatus.set('failed')
+                    handoffError.set(`Wrong Scheme: ${scheme}`)
                     return
                 }
                 const provider = searchParams.get(PROVIDER_NAME_IN_URL)
@@ -136,7 +114,6 @@ export const electronWebHandoffPlugin = <
                     return
                 }
                 const performFastLogin = async () => {
-                    console.log('檢測到有效 Session,啟動快速通道...')
                     handoffStatus.set('connecting')
                     const { data: fastLoginResult, error: fastLoginError } = await safeTry(
                         async () => {
@@ -164,14 +141,14 @@ export const electronWebHandoffPlugin = <
                             const targetUrl = fastTicketData.redirect
                             if (!targetUrl.startsWith(`${scheme}://`)) {
                                 handoffStatus.set('failed')
-                                console.error(
-                                    `Failed to get fast ticket with Wrong Scheme: ${scheme}`,
-                                )
                                 throw new BigIOError(
                                     `Failed to get fast ticket with Wrong Scheme: ${scheme}`,
                                     {
                                         bigioErrorStack: [
-                                            { msg: 'Failed to get fast ticket', ctx: scheme },
+                                            {
+                                                msg: 'Failed to get fast ticket with Wrong Scheme',
+                                                ctx: scheme,
+                                            },
                                         ],
                                     },
                                 )
@@ -181,20 +158,15 @@ export const electronWebHandoffPlugin = <
                     )
                     if (!fastLoginResult || fastLoginError) {
                         handoffStatus.set('failed')
-                        handoffMessage.set({
-                            msg: 'failed',
-                            ctx: searchParamsObj,
-                        })
+                        handoffError.set('Can not perform fast login')
                         return false
                     }
 
                     window.location.href = fastLoginResult.redirect
                     handoffStatus.set('succeed')
-                    handoffMessage.set({ msg: 'succeed' })
                     return true
                 }
                 const handleLogin = async (loginProvider: (typeof PROVIDERS)[number]) => {
-                    console.log('登錄ing')
                     handoffStatus.set('connecting')
                     const { data: loginData, error: loginError } = await safeTry(async () => {
                         const callbackURL = new URL(
@@ -207,59 +179,67 @@ export const electronWebHandoffPlugin = <
                         callbackURL.searchParams.set(CHALLENGE_NAME_IN_URL, validParams.challenge)
 
                         const relativeCallbackURL = callbackURL.pathname + callbackURL.search
-                        await client.signIn.social({
+                        const social = await client.signIn.social({
                             provider: loginProvider,
                             callbackURL: relativeCallbackURL,
+                            // additionalData
+                            // disableRedirect
+                            // errorCallbackURL
+                            // fetchOptions
+                            // idToken
+                            // loginHint
+                            // newUserCallbackURL
+                            // requestSignUp
+                            // scopes
                         })
 
-                        return true
+                        return social
                     })
                     if (!loginData || loginError) {
                         handoffStatus.set('failed')
-                        handoffMessage.set({
-                            msg: 'failed',
-                            ctx: searchParamsObj,
-                        })
+                        handoffError.set('Failed to perform oauth login')
                         return false
                     }
                     handoffStatus.set('succeed')
-                    handoffMessage.set({ msg: 'succeed' })
                     return true
                 }
-                if (sessionData) {
-                    performFastLogin()
+                if (sessionData.session) {
+                    const isFastLogin = fastLogin.get()
+                    if (isFastLogin === true) {
+                        performFastLogin()
+                    }
+                    if (isFastLogin === false) {
+                        handleLogin(provider as (typeof PROVIDERS)[number])
+                    }
+                    if (isFastLogin === null) {
+                        handoffStatus.set('pending')
+                        return
+                    }
                 } else {
                     handleLogin(provider as (typeof PROVIDERS)[number])
                 }
             }
             if (!checkAndSetGlobalLock()) {
-                onMount(sessionAtom, () => {
-                    console.log('onMount')
-                })
                 sessionAtom.listen((aatom) => {
                     handoffLogic()
-                    console.log('listen', aatom)
+                })
+                fastLogin.listen(() => {
+                    handoffStatus.set('idle')
+                    handoffLogic()
                 })
             }
 
-            // window.addEventListener('hashchange', () => {
-            //     console.log(' [Handoff] Hash changed, re-running logic')
-            //     // handoffLogic()
-            // })
-
-            // window.addEventListener('popstate', () => {
-            //     console.log('history [Handoff] History navigation detected')
-            //     // handoffLogic()
-            // })
+            const setFastLogin = (decision: boolean) => {
+                fastLogin.set(decision)
+            }
             return {
                 bigio: {
                     useElectronOAuthSession: () => {
                         const { data, error, isPending, isRefetching, refetch } =
                             useStore(sessionAtom)
+                        const oauthError = useStore<typeof handoffError>(handoffError)
 
-                        const oauthMessage = useStore<typeof handoffMessage>(
-                            $store.atoms.handoffMessage,
-                        )
+                        const oauthStatus = useStore<typeof handoffStatus>(handoffStatus)
 
                         return {
                             data: data,
@@ -267,7 +247,9 @@ export const electronWebHandoffPlugin = <
                             isPending: isPending,
                             isRefetching: isRefetching,
                             refetch: refetch,
-                            oauthMessage: oauthMessage,
+                            oauthStatus: oauthStatus,
+                            oauthError: oauthError,
+                            setFastLogin: setFastLogin,
                         }
                     },
                 },
