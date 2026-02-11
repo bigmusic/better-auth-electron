@@ -1,5 +1,68 @@
 ## I'm currently studying the official implementation; the documentation is still rough but will be improved soon. I'm eager and looking forward to exchanging ideas with everyone.
 
+# Authentication Flow
+
+The following diagram illustrates the complete OAuth authorization and session handoff process, including the interaction with external **OAuth Providers** (e.g., GitHub, Google):
+
+```mermaid
+sequenceDiagram
+    participant User as User
+    participant E_R as Electron Renderer
+    participant E_M as Electron Main
+    participant Browser as External Browser (Web Frontend)
+    participant Server as Auth Server (Better Auth)
+    participant Provider as OAuth Provider (GitHub/Google)
+
+    Note over E_R, E_M: 1. Initialization & Startup
+    E_R->>E_M: Send App Mounted Signal
+    User->>E_R: Click Login
+    E_R->>E_R: Click Login (window.open)
+    E_M->>E_M: Intercept Request, Generate PKCE Verifier
+    E_M->>Browser: Open External Browser (with Challenge)
+
+    Note over Browser, Provider: 2. Web Handoff Decision & OAuth Flow
+    alt Session Exists
+        Browser->>Browser: Detect Active Session
+        Browser->>User: Show "Continue as [User]" or "Switch Account"
+        alt User selects "Fast Login"
+            User->>Browser: Click "Continue as [User]"
+            Browser->>Server: Request Fast Ticket (POST /fast-ticket)
+            Server->>Server: Generate Encrypted Ticket
+            Server-->>Browser: Return Redirect URL (bigio://...)
+        else User selects "Switch Account"
+            User->>Browser: Click "Switch Account"
+            Browser->>Server: Initiate OAuth (signIn.social)
+            Server->>Provider: Redirect to Provider Login
+            Provider->>User: Prompt for Credentials
+            User->>Provider: Authorize App
+            Provider-->>Server: Callback with Code/Token
+            Note right of Server: Stateless: Set-Cookie is intercepted/removed
+            Server->>Server: Auth Success, Generate Encrypted Ticket
+            Server-->>Browser: Redirect to bigio://callback?ticket=...
+        end
+    else No Session
+        User->>Browser: Select Provider
+        Browser->>Server: Initiate OAuth (signIn.social)
+        Server->>Provider: Redirect to Provider Login
+        Provider->>User: Prompt for Credentials
+        User->>Provider: Authorize App
+        Provider-->>Server: Callback with Code/Token
+        Note right of Server: Stateless: Set-Cookie is intercepted/removed
+        Server->>Server: Auth Success, Generate Encrypted Ticket
+        Server-->>Browser: Redirect to bigio://callback?ticket=...
+    end
+
+    Note over Browser, E_R: 3. Session Handoff
+    Browser->>E_M: Trigger Deep Link (Custom Protocol)
+    E_M->>E_R: Send Ticket & Verifier via IPC
+    E_R->>E_R: Verify PKCE Challenge
+    E_R->>Server: POST /exchange-ticket (Ticket + Verifier)
+    Server->>Server: Decrypt Ticket, Verify PKCE
+    Server->>Server: Create Electron-specific Session
+    Server-->>E_R: Return Session Cookie (SameSite=None)
+    E_R->>E_R: Login Success, Refresh UI
+```
+
 Based on my study of the official implementation code, I have decided on the following to-do list:
 
 **~~1. Architecture: The "Silent Handoff" (Stateless & Secure)~~**
