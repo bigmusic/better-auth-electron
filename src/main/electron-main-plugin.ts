@@ -13,6 +13,7 @@ import type { ElectronMainPluginOptions } from '../options/electron-plugin-optio
 import { defaultMainPluginOptions } from '../options/electron-plugin-options'
 import {
     BigIOError,
+    OptionalSearchParamsZodBuilder,
     okOr,
     pkceGenerateChallenge,
     pkceGenerateVerifier,
@@ -21,7 +22,7 @@ import {
 
 log.initialize()
 const isInitializedAtom = atom(false)
-const deepLinkUrlAtom = atom<string | null>(null)
+const deepLinkUrlTempAtom = atom<string | null>(null)
 const browserWindowAtom = atom<BrowserWindow | null>(null)
 
 const getMainWindow = () => {
@@ -95,11 +96,9 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
         FRONTEND_URL,
         CHALLENGE_NAME_IN_URL,
         SCHEME_NAME_IN_URL,
-        PROVIDER_NAME_IN_URL,
         ELECTRON_APP_HOST,
         ELECTRON_RENDERER_PATH,
         ELECTRON_VERIFIER_FILE_NAME,
-        PROVIDERS,
         ELECTRON_APP_NAME,
         OLD_SCHOOL_ONBEFORE_WAY,
         CONTENT_SECURITY_POLICY,
@@ -217,9 +216,9 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
                 deepLinkURL: deepLinkURL,
                 verifier: getElectronVerifier(),
             })
-            deepLinkUrlAtom.set(null)
+            deepLinkUrlTempAtom.set(null)
         } else {
-            deepLinkUrlAtom.set(deepLinkURL)
+            deepLinkUrlTempAtom.set(deepLinkURL)
         }
     }
     // for macos deeplink
@@ -236,7 +235,7 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
         const coldStartUrl = process.argv.find((arg) => arg.startsWith(`${ELECTRON_SCHEME}://`))
 
         if (coldStartUrl) {
-            deepLinkUrlAtom.set(coldStartUrl)
+            deepLinkUrlTempAtom.set(coldStartUrl)
         }
     }
 
@@ -249,13 +248,13 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
 
     ipcMain.removeAllListeners(APP_MOUNTED_EVENT_NAME)
     ipcMain.on(APP_MOUNTED_EVENT_NAME, (event) => {
-        const deepLinkURL = deepLinkUrlAtom.get()
+        const deepLinkURL = deepLinkUrlTempAtom.get()
         if (deepLinkURL) {
             event.sender.send(DEEPLINK_EVENT_NAME, {
                 deepLinkURL: deepLinkURL,
                 verifier: getElectronVerifier(),
             })
-            deepLinkUrlAtom.set(null)
+            deepLinkUrlTempAtom.set(null)
         }
     })
     ipcMain.removeHandler(GET_COOKIES_EVENT_NAME)
@@ -310,26 +309,6 @@ export const mainInjection = (options?: ElectronMainPluginOptions) => {
                         )
 
                         const url = new URL(targetUrl)
-                        const provider = okOr(
-                            url.searchParams.get(PROVIDER_NAME_IN_URL),
-                            new BigIOError('No provider', {
-                                bigioErrorStack: [
-                                    {
-                                        ctx: targetUrl,
-                                    },
-                                ],
-                            }),
-                        )
-                        if (!PROVIDERS.includes(provider)) {
-                            throw new BigIOError('Error Provider', {
-                                bigioErrorStack: [
-                                    {
-                                        ctx: targetUrl,
-                                    },
-                                ],
-                            })
-                        }
-
                         url.searchParams.set(CHALLENGE_NAME_IN_URL, challenge)
                         url.searchParams.set(SCHEME_NAME_IN_URL, ELECTRON_SCHEME)
 

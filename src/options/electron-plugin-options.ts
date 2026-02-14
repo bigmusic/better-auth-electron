@@ -60,11 +60,21 @@ export type ElectronServerPluginOptions = {
     SCHEME_NAME_IN_URL?: string
     PROVIDER_NAME_IN_URL?: string
     CHALLENGE_NAME_IN_URL?: string
+    AUTH_STATUS_NAME_IN_URL?: string
     TICKET_TTL_SEC?: number
     ELECTRON_SESSION_DURATION?: number
 }
 
 export type ElectronRendererPluginOptions = {
+    FRONTEND_URL?: string
+    PROVIDER_NAME_IN_URL?: string
+    SCOPES_NAME_IN_URL?: string
+    LOGINHINT_NAME_IN_URL?: string
+    ADDITIONAL_DATA_NAME_IN_URL?: string
+    PROVIDERS?: string[]
+    REQUEST_SIGN_UP_NAME_IN_URL?: string
+    AUTH_STATUS_NAME_IN_URL?: string
+
     /**
      * The custom protocol scheme used for deep linking authentication.
      * @remarks
@@ -83,10 +93,10 @@ export type ElectronRendererPluginOptions = {
     ELECTRON_APP_HOST?: string
     TICKET_NAME_IN_URL?: string
     onDeepLinkFailedFn?: (error: unknown) => Promise<void>
-    onDeepLinkSuccessFn?: (data: {
+    onDeepLinkSuccessFn?: <T>(data: {
         session: Pick<Session, 'createdAt' | 'updatedAt' | 'expiresAt'>
         user: User
-    }) => Promise<void>
+    }) => Promise<T | unknown>
     lazySignalUIReadyForFn?: boolean
     /**
      * The specific action path or host used to identify the auth callback.
@@ -123,7 +133,6 @@ export type ElectronMainPluginOptions = {
      */
     ELECTRON_SCHEME: string
     BETTER_AUTH_BASEURL: string
-    PROVIDERS: string[]
     FRONTEND_URL: string
     ELECTRON_APP_NAME: string
     CONTENT_SECURITY_POLICY?: string
@@ -139,7 +148,6 @@ export type ElectronMainPluginOptions = {
     ELECTRON_VERIFIER_LENGTH?: number
     CHALLENGE_NAME_IN_URL?: string
     SCHEME_NAME_IN_URL?: string
-    PROVIDER_NAME_IN_URL?: string
     CALLBACK_PATHNAME_IN_URL?: string
     WEB_OAUTH_SIGNIN_CALLBACK_PATHNAME?: string
     ELECTRON_APP_HOST?: string
@@ -203,7 +211,7 @@ export type ElectronButtonOptions = {
     FRONTEND_URL: string
     PROVIDER_NAME_IN_URL: string
 }
-export type ElectronWebOptions = typeof defatultWebOptions
+export type ElectronWebOptions = typeof defaultWebOptions
 
 export const defaultServerPluginOptions = {
     ELECTRON_SCHEME: 'bigio',
@@ -220,7 +228,8 @@ export const defaultServerPluginOptions = {
     TICKET_NAME_IN_URL: 'ticket',
     SCHEME_NAME_IN_URL: 'scheme',
     PROVIDER_NAME_IN_URL: 'provider',
-    CHALLENGE_NAME_IN_URL: 'electron_challenge',
+    CHALLENGE_NAME_IN_URL: 'electron-challenge',
+    AUTH_STATUS_NAME_IN_URL: 'electron-status',
     TICKET_TTL_SEC: 60 * 5,
     ELECTRON_SESSION_DURATION: 7 * 24 * 60 * 60 * 1000,
     // customPreactJS: customPreactJS,
@@ -230,13 +239,22 @@ export const defaultRendererPluginOptions = {
     ELECTRON_SCHEME: 'bigio',
     ELECTRON_APP_HOST: 'app-renderer',
     BACKEND_EXCHANGE_URL: 'electron/exchange',
+    PROVIDERS: ['github', 'google'],
+
     refetchSessionOnFocus: true,
     ELECTRON_CALLBACK_HOST_PATH: 'better-auth-callback',
     DEEPLINK_EVENT_NAME: 'deep-link-received',
     APP_MOUNTED_EVENT_NAME: 'renderer-app-mounted',
-    CHALLENGE_NAME_IN_URL: 'electron_challenge',
+    CHALLENGE_NAME_IN_URL: 'electron-challenge',
     TICKET_NAME_IN_URL: 'ticket',
     lazySignalUIReadyForFn: false,
+    FRONTEND_URL: 'http://localhost:3001/oauth',
+    PROVIDER_NAME_IN_URL: 'provider',
+    SCOPES_NAME_IN_URL: 'electron-scopes',
+    LOGINHINT_NAME_IN_URL: 'electron-loginhint',
+    ADDITIONAL_DATA_NAME_IN_URL: 'electron-addata',
+    REQUEST_SIGN_UP_NAME_IN_URL: 'electron-reqsignup',
+    AUTH_STATUS_NAME_IN_URL: 'electron-status',
 } satisfies Partial<ElectronRendererPluginOptions>
 
 export const defaultMainPluginOptions = {
@@ -244,7 +262,6 @@ export const defaultMainPluginOptions = {
     isOAuth: true,
     BETTER_AUTH_BASEURL: 'http://localhost:3002',
     ELECTRON_APP_NAME: 'bigio-electron-demo',
-    PROVIDERS: ['github', 'google'],
     ELECTRON_APP_HOST: 'app-renderer',
     ELECTRON_SCHEME: 'bigio',
     ELECTRON_RENDERER_PATH: 'out/renderer',
@@ -253,11 +270,10 @@ export const defaultMainPluginOptions = {
     CLEAR_COOKIES_EVENT_NAME: 'clear-Cookies',
     GET_COOKIES_EVENT_NAME: 'get-Cookies',
     ELECTRON_VERIFIER_LENGTH: 32,
-    FRONTEND_URL: 'http://localhost:3002/oauth',
+    FRONTEND_URL: 'http://localhost:3001/oauth',
     WEB_OAUTH_SIGNIN_CALLBACK_PATHNAME: 'electron-handoff',
     SCHEME_NAME_IN_URL: 'scheme',
-    PROVIDER_NAME_IN_URL: 'provider',
-    CHALLENGE_NAME_IN_URL: 'electron_challenge',
+    CHALLENGE_NAME_IN_URL: 'electron-challenge',
     CALLBACK_PATHNAME_IN_URL: 'callbackpath',
     OLD_SCHOOL_ONBEFORE_WAY: false,
     ELECTRON_CALLBACK_HOST_PATH: 'better-auth-callback',
@@ -269,12 +285,17 @@ export const defaultButtonOptions = {
     PROVIDER_NAME_IN_URL: 'provider',
 } satisfies Partial<ElectronButtonOptions>
 
-export const defatultWebOptions = {
+export const defaultWebOptions = {
     ELECTRON_SCHEME: 'bigio',
     SCHEME_NAME_IN_URL: 'scheme',
     PROVIDERS: ['github', 'google'],
     PROVIDER_NAME_IN_URL: 'provider',
-    CHALLENGE_NAME_IN_URL: 'electron_challenge',
+    CHALLENGE_NAME_IN_URL: 'electron-challenge',
     WEB_OAUTH_SIGNIN_CALLBACK_PATHNAME: 'electron-handoff',
     BACKEND_FAST_TICKET_URL: 'electron/fastTicket',
+    SCOPES_NAME_IN_URL: 'electron-scopes',
+    LOGINHINT_NAME_IN_URL: 'electron-loginhint',
+    ADDITIONAL_DATA_NAME_IN_URL: 'electron-addata',
+    REQUEST_SIGN_UP_NAME_IN_URL: 'electron-reqsignup',
+    AUTH_STATUS_NAME_IN_URL: 'electron-status',
 } as const

@@ -6,7 +6,7 @@ import type { IpcRenderer, WebFrame, WebUtils } from 'electron'
 
 // import { atom } from 'jotai/vanilla'
 
-import z from 'zod'
+import z, { boolean } from 'zod'
 
 import { IS_DEV } from './electron-plugin-env'
 
@@ -452,6 +452,7 @@ const secretKeyCache = new Map<string, CryptoKey>()
 
 const MAX_CACHE_SIZE = 50
 const GLOBAL_ENCODER = new TextEncoder()
+const GLOBAL_DECODER = new TextDecoder()
 async function getCachedKey(secret: string): Promise<CryptoKey> {
     const checkSecret = okOr(secret, {
         msg: 'Invalid secret input for getCachedKey',
@@ -669,7 +670,7 @@ export async function decryptTicket<T = Record<string, unknown>>(
             ctx: { ivLength: iv.byteLength, dataLength: data.byteLength },
         },
     )
-    const decodedString = new TextDecoder().decode(decryptedBuffer)
+    const decodedString = GLOBAL_DECODER.decode(decryptedBuffer)
     const rawJson = safeTry(() => JSON.parse(decodedString), {
         msg: 'JSON Parsing Decrypted payload Failed',
         ctx: { len: decodedString.length, prefix: decodedString.slice(0, 10) },
@@ -748,7 +749,7 @@ export async function pkceGenerateChallenge(verifier: string): Promise<string> {
 }
 const REGEX_BASE64_URL = /^[a-zA-Z0-9\-_]+=*$/
 
-export function SearchParamsZod(ELECTRON_SCHEME: string, PROVIDERS: string[]) {
+export function RequiredSearchParamsBuilder(ELECTRON_SCHEME: string, PROVIDERS: string[]) {
     return z.object({
         scheme: z
             .string()
@@ -762,5 +763,44 @@ export function SearchParamsZod(ELECTRON_SCHEME: string, PROVIDERS: string[]) {
             .string()
             .length(43, 'Challenge must be exactly 43 characters')
             .regex(REGEX_BASE64_URL),
+        status: z.enum(['succeed', 'error', 'newUser']).optional(),
     })
+}
+export const OptionalSearchParamsZodBuilder = z.object({
+    scopes: z.array(z.string()).optional(),
+    loginHint: z.string().optional(),
+    additionalData: z.record(z.string(), z.any()).optional(),
+    requestSignUp: boolean().optional(),
+})
+export const safeEncodeURL = (data: unknown) => {
+    return safeTry(() => {
+        if (data === undefined || data === null) {
+            throw new BigIOError('Invalid input for safeEncodeURL: input is null/undefine', {
+                bigioErrorStack: [{ msg: 'input is null/undefine' }],
+            })
+        }
+
+        const jsonStr = JSON.stringify(data)
+        const bytes = GLOBAL_ENCODER.encode(jsonStr)
+
+        return encode64(bytes)
+    }, true)
+}
+
+export const safeDecodeURL = <T = unknown>(data: string): T => {
+    return safeTry(() => {
+        if (data === undefined || data === null) {
+            throw new BigIOError('Invalid input for safeDecodeURL: input is null/undefined', {
+                bigioErrorStack: [{ msg: 'input is null/undefined' }],
+            })
+        }
+        if (typeof data !== 'string') {
+            throw new BigIOError('Invalid input for safeDecodeURL: expected string', {
+                bigioErrorStack: [{ ctx: { type: typeof data, value: data } }],
+            })
+        }
+        const bytes = decode64(data)
+        const jsonStr = GLOBAL_DECODER.decode(bytes)
+        return JSON.parse(jsonStr)
+    }, true)
 }

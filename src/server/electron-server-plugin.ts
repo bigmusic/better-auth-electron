@@ -1,4 +1,4 @@
-// root/packages/better-auth-electron/src/server/electron-server-plugin.ts
+// root/src/server/electron-server-plugin.ts
 import fs from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -20,7 +20,7 @@ import {
     encryptTicket,
     okOr,
     pkceGenerateChallenge,
-    SearchParamsZod,
+    RequiredSearchParamsBuilder,
     safeTry,
 } from '../utils/electron-plugin-utils'
 
@@ -94,6 +94,7 @@ export const electronServerPlugin = (options: ElectronServerPluginOptions) => {
         SCHEME_NAME_IN_URL,
         PROVIDER_NAME_IN_URL,
         CHALLENGE_NAME_IN_URL,
+        AUTH_STATUS_NAME_IN_URL,
         TICKET_TTL_SEC,
         ELECTRON_SESSION_DURATION,
         PROVIDERS,
@@ -101,7 +102,7 @@ export const electronServerPlugin = (options: ElectronServerPluginOptions) => {
         ELECTRON_APP_HOST,
         customPreactJS,
     } = config
-    const searchParamsZod = SearchParamsZod(ELECTRON_SCHEME, PROVIDERS)
+    const searchParamsZod = RequiredSearchParamsBuilder(ELECTRON_SCHEME, PROVIDERS)
     const ticketZod = searchParamsZod.extend({
         userid: z.string().min(1, 'User id cannot be empty').regex(REGEX_BASE64_URL),
     })
@@ -134,16 +135,13 @@ export const electronServerPlugin = (options: ElectronServerPluginOptions) => {
                             }
 
                             const dummyURL = new URL(location, 'http://dummy')
+                            console.log(dummyURL.pathname)
 
                             // -- not electron oauth --
-                            if (!dummyURL.pathname.includes(WEB_OAUTH_SIGNIN_CALLBACK_PATHNAME)) {
+                            if (dummyURL.pathname !== `/${WEB_OAUTH_SIGNIN_CALLBACK_PATHNAME}`) {
                                 return false
                             }
-                            const setCookieHeader = safeTry(
-                                () => requireSetCookies(responseHeaders),
-                                true,
-                            )
-                            responseHeaders.delete('set-cookie')
+
                             // -- is electron oauth,so if something got wrong, will short circuit --
 
                             const searchParams = safeTry(
@@ -152,18 +150,34 @@ export const electronServerPlugin = (options: ElectronServerPluginOptions) => {
                                         scheme: dummyURL.searchParams.get(SCHEME_NAME_IN_URL),
                                         provider: dummyURL.searchParams.get(PROVIDER_NAME_IN_URL),
                                         challenge: dummyURL.searchParams.get(CHALLENGE_NAME_IN_URL),
+                                        status: dummyURL.searchParams.get(AUTH_STATUS_NAME_IN_URL),
                                     }),
                                 new APIError('BAD_REQUEST', {
                                     message: 'Invalid OAuth callback parameters',
                                 }),
                             )
 
-                            const { scheme, provider, challenge } = searchParams
-                            const currentProvider = okOr(requestUrl.pathname.split('/').pop(), {
-                                ctx: requestUrl,
-                            })
+                            const { scheme, provider, challenge, status } = searchParams
+                            if (!status) {
+                                return false
+                            }
+                            const deepLinkURL = new URL(
+                                `${ELECTRON_SCHEME}://${ELECTRON_CALLBACK_HOST_PATH}`,
+                            )
+                            deepLinkURL.searchParams.set(AUTH_STATUS_NAME_IN_URL, status)
+                            deepLinkURL.searchParams.set(CHALLENGE_NAME_IN_URL, challenge)
 
-                            console.log(currentProvider, provider)
+                            if (status === 'error') {
+                                return deepLinkURL
+                            }
+
+                            const currentProvider = okOr(
+                                requestUrl.pathname.split('/').filter(Boolean).pop(),
+                                {
+                                    ctx: requestUrl,
+                                },
+                            )
+
                             if (provider !== currentProvider) {
                                 throw new APIError('FORBIDDEN', {
                                     message: 'CurrentProvider not match electron OAuth provider',
@@ -174,7 +188,11 @@ export const electronServerPlugin = (options: ElectronServerPluginOptions) => {
                                     message: 'Invalid scheme in url',
                                 })
                             }
-
+                            const setCookieHeader = safeTry(
+                                () => requireSetCookies(responseHeaders),
+                                true,
+                            )
+                            responseHeaders.delete('set-cookie')
                             const tokenMatch = okOr(
                                 setCookieHeader
                                     .map((c) => c.match(SESSION_TOKEN_REGEX))
@@ -203,6 +221,7 @@ export const electronServerPlugin = (options: ElectronServerPluginOptions) => {
                                             scheme: scheme,
                                             provider: provider,
                                             challenge: challenge,
+                                            status: status,
                                         },
                                         ctx.context.secret,
                                         TICKET_TTL_SEC,
@@ -214,16 +233,14 @@ export const electronServerPlugin = (options: ElectronServerPluginOptions) => {
                                 }),
                             )
 
-                            const deepLinkURL = new URL(
-                                `${ELECTRON_SCHEME}://${ELECTRON_CALLBACK_HOST_PATH}`,
-                            )
                             deepLinkURL.searchParams.set(TICKET_NAME_IN_URL, ticket)
-                            deepLinkURL.searchParams.set(CHALLENGE_NAME_IN_URL, challenge)
+
                             consoleLog('Deeplink URL:', deepLinkURL)
                             return deepLinkURL
                         })
                         if (!redirectURL.data && redirectURL.error) {
                             consoleError(redirectURL.error)
+                            // todo:tell electron there is error
                             return ctx.redirect(WEB_ERROR_PAGE_URL)
                         }
                         if (redirectURL.data === false) {
@@ -249,7 +266,6 @@ export const electronServerPlugin = (options: ElectronServerPluginOptions) => {
                         if (!responseHeaders) {
                             return
                         }
-                        console.log(responseHeaders)
                         const setCookieResult = safeTry(() => requireSetCookies(responseHeaders))
                         if (!setCookieResult.data && setCookieResult.error) {
                             return
@@ -409,7 +425,6 @@ export const electronServerPlugin = (options: ElectronServerPluginOptions) => {
                             message: 'Failed to set session cookie',
                         }),
                     )
-                    consoleLog('Signed Cookie: ', signIt)
 
                     return ctx.json({
                         session: {

@@ -1,26 +1,27 @@
-### Features
+## [1.0.5] - 2026-02-14
 
-Here is the professional way to log this. It highlights the **Developer Experience (DX)** improvement.
+### Refactored
 
-## [1.0.3] - 2026-02-08
+- **Client API Integration**: Redesigned the renderer integration to mimic the official Better Auth API structure under the `bigio` namespace.
+- **Deep Link Handling**: Shifted from URL redirect logic to an event subscription model. Added `onDeepLinkSuccess`, `onDeepLinkNewUser`, and `onDeepLinkFailed` listeners.
+- **Cold Start Mechanism**: Added an internal buffer to handle deep links triggering before the UI is fully mounted, ensuring no authentication events are lost during startup.
 
-### Features
+### Documentation
 
-- **Automated Security Policy (CSP)**:
-  - Implemented `onHeadersReceived` interceptor to inject CSP headers directly from the Main Process.
-  - **Zero-Config Experience**: Users no longer need to manually maintain complex `<meta>` tags in `index.html`.
-  - **Dynamic Configuration**: Automatically whitelists the `BETTER_AUTH_BASEURL` for `connect-src` and `img-src`.
-  - **OAuth Support**: `img-src` now defaults to allowing `https:` schemes to support dynamic avatar URLs from third-party providers (GitHub, Google, etc.).
+- Updated usage examples to reflect the new `signInSocial` parameter structure (forcing `disableRedirect: false`) and URL-encoded JSON for `additionalData`.
 
 ## [1.0.4] - 2026-02-09
 
-### Features
+### Added
 
-- **Silent Handoff Architecture (Server-Side)**:
-- **Cookie Stripping**: The `electron-server-plugin` now actively intercepts OAuth callback responses and removes the `Set-Cookie` header.
-- **Session Isolation**: Ensures strict physical isolation between the browser's web session and the Electron session. The browser now acts solely as a stateless transport layer for the encrypted authentication ticket.
+- **Silent Handoff (Server)**: Implemented server-side cookie stripping in `electron-server-plugin` to enforce strict session isolation between browser and Electron.
+- **Reactive OAuth State**: Introduced a robust state machine (`idle` -> `pending` -> `connected`) in the React hook to manage authentication flows.
+- **Smart Session Detection**: Added logic to detect existing browser sessions ('pending' state) and allow users to "Fast Login" or "Switch Account".
 
-- **Reactive OAuth Client (Web-Side)**:
-- **Enhanced `useElectronOAuthSession` Hook**: Introduced a robust state machine (`idle` | `pending` | `connecting` | `succeed` | `failed`).
-- **Session Detection ('pending' state)**: The hook now intelligently detects existing browser sessions and pauses the flow, allowing the UI to prompt the user for a "Fast Login" (reuse session) or "Switch Account" (fresh login).
-- **Action Trigger**: Exposed `setFastLogin(boolean)` to programmatically control the authentication flow and update the reactive state.
+## [1.0.3] - 2026-02-08
+
+### Security
+
+- **Automated CSP Injection**: Implemented `onHeadersReceived` interceptor to inject Content Security Policy headers directly from the Main Process.
+- **Dynamic Configuration**: Added auto-whitelisting for `BETTER_AUTH_BASEURL` in `connect-src` and `img-src`.
+- **OAuth Image Support**: Updated CSP to allow `https:` schemes in `img-src` specifically for third-party avatar rendering (GitHub/Google).

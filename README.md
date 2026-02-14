@@ -1,4 +1,19 @@
-## I'm currently studying the official implementation; the documentation is still rough but will be improved soon. I'm eager and looking forward to exchanging ideas with everyone.
+# @bigio/better-auth-electron
+
+This plugin establishes a secure, **event-driven** authentication bridge between Electron and Better Auth. It treats the system browser strictly as a **stateless transport layer**, utilizing **AES-encrypted tickets** and **PKCE verification** to perform session handoff without persisting web cookies in the desktop environment.
+
+The renderer implementation abandons traditional redirect handling in favor of an IPC-based subscription model (`onDeepLink*`). It features a built-in **cold-start buffer** to guarantee token capture even if the deep link triggers the application before the UI is fully mounted. The API surface is designed to mirror the official Better Auth client patterns, ensuring strict typing and zero-friction integration.
+
+### Key Architecture
+
+- **Stateless Web Handoff**: The browser authenticates via OAuth but does not share the session with Electron. It passes an encrypted, time-limited ticket back to the desktop app.
+- **Security**: Full PKCE flow (Proof Key for Code Exchange) with verified challenges and AES-encrypted exchange tickets.
+- **Event-Driven Renderer**: No page reloads or router redirects. Listen for `onDeepLinkSuccess`, `onDeepLinkNewUser`, or `onDeepLinkFailed` directly within your React/Vue components.
+- **Cold Start Support**: Includes an internal IPC buffer to cache deep link events that occur during the application boot phase, ensuring no authentication intent is lost while the renderer initializes.
+- **API Parity**: Extends the `authClient` with a `bigio` namespace that mimics standard Better Auth methods (e.g., `signInSocial`).
+- **Native Secure Context & Origin Fix:** Leverages `protocol.registerSchemesAsPrivileged` to treat your custom scheme as a secure context. This solves the infamous `Origin` header mismatch.
+
+#### _I'm currently studying the official implementation; the documentation is still rough but will be improved soon. I'm eager and looking forward to exchanging ideas with everyone._
 
 # Authentication Flow
 
@@ -87,36 +102,13 @@ Based on my study of the official implementation code, I have decided on the fol
 
 **3. Developer Experience (DX) & API**
 
-- [ ] **Enhanced Renderer API**: Refactor `getActions` to introduce a dedicated `authClient.bigio` namespace.
-- _Feature_: Implement `authClient.bigio.signIn({ provider: 'github' })` wrapper.
-- _Implementation_: Utilize `window.open` (intercepted by Main) or IPC to trigger the flow, keeping the API consistent with the official web client style.
+- [done] ~~**Enhanced Renderer API**: Refactor `getActions` to introduce a dedicated `authClient.bigio` namespace.~~
+- ~~_Feature_: Implement `authClient.bigio.signIn({ provider: 'github' })` wrapper.~~
+- ~~_Implementation_: Utilize `window.open` (intercepted by Main) or IPC to trigger the flow, keeping the API consistent with the official web client style.~~
 
 - [done] ~~**Smart Web Handoff UI (Optional/Next)**: Update the web-side confirmation page to detect and display the currently logged-in web user, offering a "Continue as [User]" button for a seamless transition.~~
 
-# @bigio/better-auth-electron
-
-> **Work In Progress:** This library is actively being developed. Detailed documentation and architecture diagrams are coming soon.
-
-**A type-safe, IPC-Event based Better Auth integration for Electron.**
-
-Designed for production-grade applications, this library provides a secure, "batteries-included" solution to integrate [Better Auth](https://www.better-auth.com) into Electron apps without the headache of writing manual IPC bridges or handling complex OAuth window flows.
-
-## Features
-
-- ** Native Secure Context & Origin Fix:**
-  Leverages `protocol.registerSchemesAsPrivileged` to treat your custom scheme as a secure context. This solves the infamous `Origin` header mismatch and enables `SameSite` cookies to work natively without hacks.
-
-- ** Secure PKCE Flow:**
-  Implements the standard **Proof Key for Code Exchange** protocol out-of-the-box. Ensures enterprise-grade security for your OAuth exchanges without exposing secrets.
-
-- ** Preact SSR Coming soon:**
-  Includes a dedicated, lightweight Preact entry point optimized for Server-Side Rendering (SSR) in login windows.
-  _(React 19 supported. Vue/Svelte support coming soon!)_
-
-- ** Zero-IPC Session Handoff:**
-  Uses secure custom protocol deep links to transfer authentication states. Full TypeScript inference via Better Auth plugins — **no fragile IPC bridges** or manual message handling required.
-
-## Installation
+# Installation
 
 ```bash
 pnpm add @bigio/better-auth-electron
@@ -128,7 +120,7 @@ Ensure peer dependencies are installed:(more framework support coming soon...)
 pnpm add better-auth electron react react-dom
 ```
 
-## Quick Start
+# Quick Start
 
 ### 1. Server Setup (`src/lib/auth.ts`)
 
@@ -289,35 +281,123 @@ export const authClient = createAuthClient({
 })
 ```
 
-### 5. Electron Renderer / Login Page (`src/renderer/pages/login.tsx`)
+### 5. Electron Renderer Integration (New API)
 
-In your Electron renderer (the UI), use the helper options to construct the correct OAuth URL that opens in the system's default browser.
+I have refactored the client-side integration to closely mirror the official Better Auth API structure, while adapting it for the specific constraints of the Electron environment (IPC & Deep Linking).
 
-```typescript
-import type { ElectronButtonOptions } from '@bigio/better-auth-electron/options'
-import { defaultButtonOptions } from '@bigio/better-auth-electron/options'
+### Key Features
 
-// Merge default options with any custom overrides
-const config: ElectronButtonOptions = { ...defaultButtonOptions }
-const { FRONTEND_URL, PROVIDER_NAME_IN_URL } = config
+- **Official API Parity:** Uses a syntax similar to `authClient.signIn.social`.
+- **Callback Functions over URLs:** Instead of handling redirects, we use event subscriptions (`onDeepLinkSuccess`, `onDeepLinkNewUser`) to handle the authentication result.
+- **Cold Start Support:** The plugin includes an internal buffer. If the application is opened via a Deep Link before the UI is fully mounted, the plugin caches the session data and triggers the callback immediately upon registration.
 
-const ElectronLoginButton = ({ provider }: { provider: string }) => {
-  const handleOpen = () => {
-    // Construct the auth URL
-    const targetUrl = `${FRONTEND_URL}?${PROVIDER_NAME_IN_URL}=${provider}`
+### Implementation
 
-    // Open in external browser (e.g., Chrome/Safari) to start the flow
-    window.open(targetUrl, '_blank')
-    console.log('Opening External Browser for OAuth...')
-  }
+In your Electron renderer (e.g., `src/renderer/pages/login.tsx`), use the `bigio` namespace exposed by the client plugin.
 
-  return (
-    <button onClick={handleOpen}>
-      Sign in with {provider}
-    </button>
-  )
-}
+#### 1. Triggering the Sign-In
+
+Use `signInSocial` to initiate the flow. This handles the construction of the OAuth URL, serialization of scopes/parameters, and automatically opens the system default browser.
+
+**Note on Constraints:**
+
+1. **`disableRedirect`** is forced to `false`. The flow _must_ redirect to the deep link scheme to trigger the Electron app.
+2. **`additionalData`** is **JSON serialized and encoded into the URL**. Do not pass sensitive data or large objects, as they may hit browser URL length limits.
+
+```tsx
+import { authClient } from '@/lib/auth-client' // Your initialized client
+
+// ... inside your component
+;<button
+  onClick={async () => {
+    await authClient.bigio.signInSocial({
+      // [Required] The provider key (e.g., 'github', 'google')
+      provider: 'github',
+
+      // [Optional] Array of OAuth scopes
+      scopes: ['repo', 'user'],
+
+      // [Optional] Object passed to the backend (JSON serialized via URL)
+      // Warning: Keep this payload small to avoid URL length issues.
+      additionalData: {
+        theme: 'dark',
+        ref_source: 'desktop_app',
+      },
+
+      // [Optional] Hint for the provider (e.g., email address)
+      loginHint: 'user@example.com',
+
+      // [Optional] Force a sign-up screen instead of sign-in
+      requestSignUp: false,
+    })
+  }}>
+  Sign in with GitHub
+</button>
 ```
+
+#### 2. Handling the Callback (Deep Link)
+
+Instead of a page redirect, we listen for IPC completion events. You **must** register listeners for success, failure, and (optionally) new user creation.
+
+These functions return an **unsubscribe** handler. You are responsible for cleaning this up to prevent memory leaks or double-firing events.
+
+```tsx
+import { useEffect } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { authClient } from '@/lib/auth-client'
+
+export default function LoginPage() {
+    const navigate = useNavigate()
+
+    useEffect(() => {
+        // 1. Handle Successful Login (Returning User)
+        const unsubscribeSuccess = authClient.bigio.onDeepLinkSuccess(async (data) => {
+            console.log('Login Successful:', data)
+            // data contains { user, session }
+            navigate('/dashboard')
+            return true
+        })
+
+        // 2. Handle New User Registration (First Time Login)
+        // If not provided, 'onDeepLinkSuccess' might be triggered depending on backend config,
+        // but it is recommended to handle new users explicitly if you have an onboarding flow.
+        const unsubscribeNewUser = authClient.bigio.onDeepLinkNewUser(async (data) => {
+             console.log('New User Registered:', data)
+             // data contains { user, session }
+             navigate('/onboarding')
+             return true
+        })
+
+        // 3. Handle Errors (Network issues, User denied access, Invalid State)
+        const unsubscribeError = authClient.bigio.onDeepLinkFailed(async (error) => {
+            console.error('Authentication Failed:', error)
+            // Show toast or error message
+        })
+
+        // Cleanup: Essential for React's StrictMode and component unmounting
+        return () => {
+            unsubscribeSuccess()
+            unsubscribeNewUser()
+            unsubscribeError()
+        }
+    }, [])
+
+    return (
+        // ... your JSX
+    )
+}
+
+```
+
+### API Reference: `signInSocial`
+
+| Parameter        | Type                      | Description                                                        |
+| ---------------- | ------------------------- | ------------------------------------------------------------------ |
+| `provider`       | `string`                  | **Required.** The key of the provider (e.g., `github`).            |
+| `scopes`         | `string[]`                | **Optional.** Additional OAuth scopes to request.                  |
+| `additionalData` | `Record<string, unknown>` | **Optional.** Metadata sent to the backend. **Serialized to URL.** |
+| `loginHint`      | `string`                  | **Optional.** Passes a hint (usually email) to the provider.       |
+| `requestSignUp`  | `boolean`                 | **Optional.** Hints the provider to show the registration page.    |
 
 ### 6. Web/App Component Usage (`src/web/components/user-session.tsx`)
 

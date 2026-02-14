@@ -1,4 +1,4 @@
-// root/packages/better-auth-electron/client/better-auth/electron-renderer-plugin.ts
+// root/src/renderer/electron-renderer-plugin.ts
 
 import type { BetterAuthClientPlugin, Session, User } from 'better-auth'
 import { atom } from 'nanostores'
@@ -11,7 +11,10 @@ import {
     BigIOError,
     consoleError,
     consoleLog,
+    OptionalSearchParamsZodBuilder,
     pkceGenerateChallenge,
+    RequiredSearchParamsBuilder,
+    safeEncodeURL,
     safeTry,
 } from '../utils/electron-plugin-utils'
 
@@ -19,6 +22,13 @@ type ExchangeResult = {
     session: Pick<Session, 'createdAt' | 'updatedAt' | 'expiresAt'>
     user: User
 }
+type SucceedFn = <T>(data: ExchangeResult) => Promise<T | unknown>
+type OnDeepLinkSucceedFn = (succeedFn: SucceedFn) => (() => void) | undefined
+
+type FailedFn = (error: unknown) => Promise<unknown> | unknown
+type OnDeepLinkFailedFn = (failedFn: FailedFn) => (() => void) | undefined
+type NewUserFn = <T>(data: ExchangeResult) => Promise<T | unknown>
+type OnDeepLinkNewUserFn = (newUserFn: NewUserFn) => (() => void) | undefined
 // Extend the Window interface to include our custom property
 const LOCK_NAME_IN_WINDOW = '__BIGIO_BETTER_AUTH_ELECTRON_ATTACHED__'
 
@@ -31,7 +41,7 @@ const checkAndSetGlobalLock = (): boolean => {
     return false
 }
 
-const ipcDeepLinkAtom = atom(false)
+const ipcDeepLinkAttachedAtom = atom(false)
 const abortSignalAtom = atom<AbortController | null>(null)
 const ensureFreshSignal = () => {
     const currentAbortSignal = abortSignalAtom.get()
@@ -45,12 +55,12 @@ const ensureFreshSignal = () => {
 
 const isPluginReadyAtom = atom(false)
 const appMountedAtom = atom(false)
-const resultFromDeepLinkAtom = atom<ExchangeResult | Error | null>(null)
-const onDeepLinkSuccessFnAtom =
-    atom<ElectronRendererPluginOptions['onDeepLinkSuccessFn']>(undefined)
-
-const onDeepLinkFailedFnAtom = atom<ElectronRendererPluginOptions['onDeepLinkFailedFn']>(undefined)
-
+const succeedResultAtom = atom<ExchangeResult | null>(null)
+const newUserResultAtom = atom<ExchangeResult | null>(null)
+const errorResultAtom = atom<Error | unknown | null>(null)
+const onDeepLinkSucceedFnAtom = atom<SucceedFn | undefined>(undefined)
+const onDeepLinkFailedFnAtom = atom<FailedFn | undefined>(undefined)
+const onDeepLinkNewUserFnAtom = atom<NewUserFn | undefined>(undefined)
 export const electronRendererPlugin = (
     electronRendererPluginOptions: ElectronRendererPluginOptions,
 ) => {
@@ -64,17 +74,18 @@ export const electronRendererPlugin = (
         APP_MOUNTED_EVENT_NAME,
         CHALLENGE_NAME_IN_URL,
         TICKET_NAME_IN_URL,
-        onDeepLinkSuccessFn,
-        onDeepLinkFailedFn,
         lazySignalUIReadyForFn,
+        FRONTEND_URL,
+        PROVIDER_NAME_IN_URL,
+        SCOPES_NAME_IN_URL,
+        LOGINHINT_NAME_IN_URL,
+        ADDITIONAL_DATA_NAME_IN_URL,
+        PROVIDERS,
+        REQUEST_SIGN_UP_NAME_IN_URL,
+        AUTH_STATUS_NAME_IN_URL,
         // ELECTRON_APP_HOST,
     } = config
-    if (typeof onDeepLinkSuccessFn === 'function') {
-        onDeepLinkSuccessFnAtom.set(onDeepLinkSuccessFn)
-    }
-    if (typeof onDeepLinkFailedFn === 'function') {
-        onDeepLinkFailedFnAtom.set(onDeepLinkFailedFn)
-    }
+
     function sendAppMounted() {
         if (!isElectronWindow(window)) {
             return
@@ -89,8 +100,12 @@ export const electronRendererPlugin = (
             if (!isElectronWindow(window)) {
                 return {
                     bigio: {
-                        onDeepLinkSuccess: () => null,
-                        onDeepLinkFailed: () => null,
+                        // biome-ignore lint/suspicious/noEmptyBlockStatements: <>
+                        onDeepLinkSuccess: () => () => {},
+                        // biome-ignore lint/suspicious/noEmptyBlockStatements: <>
+                        onDeepLinkFailed: () => () => {},
+                        // biome-ignore lint/suspicious/noEmptyBlockStatements: <>
+                        onDeepLinkNewUser: () => () => {},
                     },
                 }
             }
@@ -108,7 +123,7 @@ export const electronRendererPlugin = (
                         { signal: focusEventAbortSignal },
                     )
                 }
-                if (!ipcDeepLinkAtom.get()) {
+                if (!ipcDeepLinkAttachedAtom.get()) {
                     const dataFromMainZod = z.object({
                         deepLinkURL: z.string().min(1),
                         verifier: z.string().min(1),
@@ -117,8 +132,8 @@ export const electronRendererPlugin = (
                     window.electron.ipcRenderer.on(
                         DEEPLINK_EVENT_NAME,
                         async (_event, dataFromMain) => {
-                            console.log(dataFromMain)
-                            const { data: readyData, error: dataError } = await safeTry(
+                            console.log('dataFromMain', dataFromMain)
+                            const { data: readyData, error: readyDataError } = await safeTry(
                                 async () => {
                                     const bigioErrorStack = [{ ctx: dataFromMain }]
                                     const safeEvent = dataFromMainZod.safeParse(dataFromMain)
@@ -148,18 +163,45 @@ export const electronRendererPlugin = (
                                             bigioErrorStack: bigioErrorStack,
                                         })
                                     }
+                                    const unknownStatus =
+                                        deepLink.searchParams.get(AUTH_STATUS_NAME_IN_URL)
 
                                     // Challenge Check
-                                    const challenge =
+                                    const unknownChallenge =
                                         deepLink.searchParams.get(CHALLENGE_NAME_IN_URL)
 
-                                    console.log(challenge)
-                                    if (!challenge) {
-                                        throw new BigIOError('Error Challenge', {
-                                            bigioErrorStack: bigioErrorStack,
+                                    // if (!challenge) {
+                                    //     throw new BigIOError('No Challenge', {
+                                    //         bigioErrorStack: bigioErrorStack,
+                                    //     })
+                                    // }
+                                    const deepLinkURLParams = RequiredSearchParamsBuilder(
+                                        ELECTRON_SCHEME,
+                                        PROVIDERS,
+                                    )
+                                    const { status, challenge } = deepLinkURLParams
+                                        .pick({
+                                            challenge: true,
+                                            status: true,
+                                        })
+                                        .parse({
+                                            challenge: unknownChallenge,
+                                            status: unknownStatus,
+                                        })
+                                    if (!status) {
+                                        throw new BigIOError('there is No status in callbackURL', {
+                                            bigioErrorStack: [
+                                                { msg: `there is No status in callbackURL` },
+                                            ],
                                         })
                                     }
-                                    console.log(challenge)
+                                    if (status === 'error') {
+                                        throw new BigIOError(`oauth login faild at error`, {
+                                            bigioErrorStack: [
+                                                { msg: `oauth login faild at error` },
+                                            ],
+                                        })
+                                    }
                                     await safeTry(async () => {
                                         const checkChallenge = await pkceGenerateChallenge(verifier)
                                         if (challenge !== checkChallenge) {
@@ -178,205 +220,307 @@ export const electronRendererPlugin = (
                                             bigioErrorStack: bigioErrorStack,
                                         })
                                     }
-                                    return { ticket: deepLinkTicket, verifier: verifier }
+                                    const exchangeResult = await $fetch<ExchangeResult>(
+                                        `/${BACKEND_EXCHANGE_URL}`,
+                                        {
+                                            method: 'POST',
+                                            body: {
+                                                ticket: deepLinkTicket,
+                                                verifier: verifier,
+                                            },
+                                        },
+                                    )
+                                    if (!exchangeResult.data || exchangeResult.error) {
+                                        throw new BigIOError('Failed to exchange the ticket', {
+                                            bigioErrorStack: [
+                                                {
+                                                    ctx: {
+                                                        deepLinkEvent: dataFromMain,
+                                                        fetchError: exchangeResult.error,
+                                                    },
+                                                },
+                                            ],
+                                        })
+                                    }
+                                    return { result: exchangeResult.data, status: status }
                                 },
                             )
-                            console.log(dataError)
 
-                            const onFailedFn = onDeepLinkFailedFnAtom.get()
-                            if (!readyData && dataError) {
-                                if (
-                                    lazySignalUIReadyForFn &&
-                                    (typeof onDeepLinkSuccessFn === 'function' ||
-                                        typeof onDeepLinkFailedFn === 'function')
-                                ) {
-                                    resultFromDeepLinkAtom.set(dataError)
-                                }
+                            // failed
+                            if (!readyData && readyDataError) {
+                                const onFailedFn = onDeepLinkFailedFnAtom.get()
                                 if (onFailedFn) {
                                     // this is async fn,prevent fake async fn that return promise
                                     // fire and forget
-                                    safeTry(
-                                        () => onFailedFn(dataError),
+                                    await safeTry(
+                                        async () => {
+                                            console.log('onFailedFn', onFailedFn)
+                                            await onFailedFn(readyDataError)
+                                            return false
+                                        },
                                         new BigIOError('Failed at onFailedFn', {
                                             bigioErrorStack: [
                                                 {
-                                                    ctx: String(dataError),
+                                                    ctx: String(readyDataError),
                                                 },
                                             ],
                                         }),
                                     )
                                     return
                                 }
-                                if (dataError instanceof BigIOError) {
-                                    consoleError(dataError)
-                                } else {
-                                    console.error(
-                                        `[Better-auth-electron-plugin] Unknown Error: ${dataError instanceof Error ? dataError.message : String(dataError)}`,
-                                    )
-                                }
+                                console.log('no onFailedFn')
+                                errorResultAtom.set(readyDataError)
                                 return
                             }
 
-                            // Exchange Ticket
-                            const result = await $fetch<ExchangeResult>(
-                                `/${BACKEND_EXCHANGE_URL}`,
-                                {
-                                    method: 'POST',
-                                    body: {
-                                        ticket: readyData.ticket,
-                                        verifier: readyData.verifier,
-                                    },
-                                },
-                            )
-                            if (result.error) {
-                                const bigIOError = new BigIOError('Failed to exchange the ticket', {
-                                    bigioErrorStack: [
-                                        {
-                                            ctx: {
-                                                deepLinkEvent: dataFromMain,
-                                                fetchError: result.error,
-                                            },
-                                        },
-                                    ],
-                                })
-                                if (
-                                    lazySignalUIReadyForFn &&
-                                    (typeof onDeepLinkSuccessFn === 'function' ||
-                                        typeof onDeepLinkFailedFn === 'function')
-                                ) {
-                                    resultFromDeepLinkAtom.set(bigIOError)
-                                }
-                                if (onFailedFn) {
-                                    // this is async fn,prevent fake async fn that return promise
-                                    // fire and forget
-                                    safeTry(() => onFailedFn(result.error), bigIOError)
-                                    return
-                                }
-                                consoleError(bigIOError)
-                                return
-                            }
                             $store.notify('$sessionSignal')
 
-                            const originalSessionDate = result.data.session
+                            const originalSessionDate = readyData.result.session
                             const hydratedSession = {
                                 createdAt: new Date(originalSessionDate.createdAt),
                                 updatedAt: new Date(originalSessionDate.updatedAt),
                                 expiresAt: new Date(originalSessionDate.expiresAt),
                             }
-                            const userSession = { user: result.data.user, session: hydratedSession }
-                            if (
-                                lazySignalUIReadyForFn &&
-                                (typeof onDeepLinkSuccessFn === 'function' ||
-                                    typeof onDeepLinkFailedFn === 'function')
-                            ) {
-                                resultFromDeepLinkAtom.set(userSession)
+                            const userSession = {
+                                user: readyData.result.user,
+                                session: hydratedSession,
                             }
-                            const onSuccessFn = onDeepLinkSuccessFnAtom.get()
-                            if (onSuccessFn) {
+
+                            if (readyData.status === 'succeed') {
+                                const onSuccessFn = onDeepLinkSucceedFnAtom.get()
                                 // this is async fn,prevent fake async fn that return promise
                                 // fire and forget
-                                safeTry(
-                                    () => onSuccessFn(userSession),
-                                    new BigIOError('Failed at onSuccessFn', {
-                                        bigioErrorStack: [
-                                            {
-                                                ctx: {
-                                                    deepLinkEvent: dataFromMain,
+                                if (onSuccessFn) {
+                                    await safeTry(
+                                        async () => {
+                                            console.log('ipc on onSuccessFn')
+                                            await onSuccessFn(userSession)
+                                            return true
+                                        },
+                                        new BigIOError('Failed at onSuccessFn', {
+                                            bigioErrorStack: [
+                                                {
+                                                    ctx: {
+                                                        deepLinkEvent: dataFromMain,
+                                                    },
                                                 },
-                                            },
-                                        ],
-                                    }),
-                                )
+                                            ],
+                                        }),
+                                    )
+                                    return
+                                }
+                                console.log('no onSuccessFn')
+                                succeedResultAtom.set(userSession)
+                            }
+                            if (readyData.status === 'newUser') {
+                                const onNewUserFn = onDeepLinkNewUserFnAtom.get()
+                                // this is async fn,prevent fake async fn that return promise
+                                // fire and forget
+                                if (onNewUserFn) {
+                                    await safeTry(
+                                        async () => {
+                                            console.log('ipc on onNewUserFn')
+                                            await onNewUserFn(userSession)
+                                            return true
+                                        },
+                                        new BigIOError('Failed at onNewUserFn', {
+                                            bigioErrorStack: [
+                                                {
+                                                    ctx: {
+                                                        deepLinkEvent: dataFromMain,
+                                                    },
+                                                },
+                                            ],
+                                        }),
+                                    )
+                                    return
+                                }
+                                console.log('no onNewUserFn')
+                                newUserResultAtom.set(userSession)
                             }
                             return
                         },
                     )
-                    ipcDeepLinkAtom.set(true)
+                    ipcDeepLinkAttachedAtom.set(true)
                 }
 
                 // Tell main app is ready handle the coldstart
-                consoleLog('[Client] 發送 App Ready 信號...')
-                if (
-                    !lazySignalUIReadyForFn ||
-                    typeof onDeepLinkSuccessFn === 'function' ||
-                    typeof onDeepLinkFailedFn === 'function'
-                ) {
-                    appMountedAtom.set(true)
-                    sendAppMounted()
-                }
+                // consoleLog('[Client] 發送 App Ready 信號...')
+                // if (
+                //     !lazySignalUIReadyForFn ||
+                //     typeof onDeepLinkSuccessFn === 'function' ||
+                //     typeof onDeepLinkFailedFn === 'function'
+                // ) {
+                //     console.log('onDeepLinkSuccessFn', onDeepLinkSuccessFn)
+                //     appMountedAtom.set(true)
+                //     sendAppMounted()
+                // }
+
+                appMountedAtom.set(true)
+
+                sendAppMounted()
             }
 
             // Lock it
             isPluginReadyAtom.set(true)
             return {
                 bigio: {
-                    onDeepLinkSuccess: (
-                        fn: ElectronRendererPluginOptions['onDeepLinkSuccessFn'],
-                    ) => {
+                    signInSocial: ({
+                        provider,
+                        scopes,
+                        additionalData,
+                        loginHint,
+                        requestSignUp,
+                    }: {
+                        provider: string
+                        scopes?: string[]
+                        additionalData?: Record<string, unknown>
+                        loginHint?: string
+                        requestSignUp?: boolean
+                    }) => {
+                        const targetUrl = new URL(FRONTEND_URL)
+                        z.enum(PROVIDERS).parse(provider)
+                        targetUrl.searchParams.set(PROVIDER_NAME_IN_URL, provider)
+
+                        const optionalParams = OptionalSearchParamsZodBuilder.parse({
+                            scopes: scopes,
+                            loginHint: loginHint,
+                            additionalData: additionalData,
+                            requestSignUp: requestSignUp,
+                        })
+                        if (optionalParams.scopes) {
+                            targetUrl.searchParams.set(
+                                SCOPES_NAME_IN_URL,
+                                safeEncodeURL(optionalParams.scopes),
+                            )
+                        }
+                        if (optionalParams.loginHint) {
+                            targetUrl.searchParams.set(
+                                LOGINHINT_NAME_IN_URL,
+                                safeEncodeURL(optionalParams.loginHint),
+                            )
+                        }
+                        if (optionalParams.additionalData) {
+                            targetUrl.searchParams.set(
+                                ADDITIONAL_DATA_NAME_IN_URL,
+                                safeEncodeURL(optionalParams.additionalData),
+                            )
+                        }
+                        if (optionalParams.requestSignUp) {
+                            targetUrl.searchParams.set(
+                                REQUEST_SIGN_UP_NAME_IN_URL,
+                                safeEncodeURL(optionalParams.requestSignUp),
+                            )
+                        }
+                        // oringal
+                        // const targetUrl = `${FRONTEND_URL}?${PROVIDER_NAME_IN_URL}=${provider}`
+                        window.open(targetUrl.toString(), '_blank')
+                        return
+                    },
+                    onDeepLinkSuccess: (succeedFn: SucceedFn) => {
                         if (!isElectronWindow(window)) {
                             return
                         }
-                        if (typeof fn === 'function') {
-                            onDeepLinkSuccessFnAtom.set(fn)
+                        if (typeof succeedFn !== 'function') {
+                            throw new BigIOError('onDeepLinkSuccess must be a function', {
+                                bigioErrorStack: [{ ctx: succeedFn }],
+                            })
                         }
-                        if (lazySignalUIReadyForFn) {
-                            if (!appMountedAtom.get()) {
-                                appMountedAtom.set(true)
-                                sendAppMounted()
-                                return
+                        onDeepLinkSucceedFnAtom.set(succeedFn)
+                        const succeedBuffer = succeedResultAtom.get()
+                        console.log('succeedBuffer', succeedBuffer)
+                        if (
+                            succeedBuffer &&
+                            !(succeedBuffer instanceof Error) &&
+                            'user' in succeedBuffer
+                        ) {
+                            console.log('lazy succeed')
+                            succeedFn(succeedBuffer)
+                            succeedResultAtom.set(null)
+                        }
+                        if (typeof onDeepLinkSucceedFnAtom.get() === 'function') {
+                            console.log('fn', onDeepLinkSucceedFnAtom.get())
+                        }
+                        return () => {
+                            console.log('unsub')
+                            if (onDeepLinkSucceedFnAtom.get() === succeedFn) {
+                                onDeepLinkSucceedFnAtom.set(undefined)
                             }
-                            const result = resultFromDeepLinkAtom.get()
-                            if (!(result instanceof Error) && result && fn) {
-                                safeTry(
-                                    async () => {
-                                        await fn(result)
-                                        resultFromDeepLinkAtom.set(null)
-                                    },
-                                    new BigIOError('Failed at lazy onSuccessFn', {
-                                        bigioErrorStack: [
-                                            {
-                                                ctx: result,
-                                            },
-                                        ],
-                                    }),
-                                )
-                            }
-                            return
                         }
                     },
-                    onDeepLinkFailed: (fn: ElectronRendererPluginOptions['onDeepLinkFailedFn']) => {
+                    onDeepLinkFailed: (failedFn: FailedFn) => {
                         if (!isElectronWindow(window)) {
                             return
                         }
-                        if (typeof fn === 'function') {
-                            onDeepLinkFailedFnAtom.set(fn)
+                        if (typeof failedFn !== 'function') {
+                            throw new BigIOError('onDeepLinkFailed must be a function', {
+                                bigioErrorStack: [{ ctx: failedFn }],
+                            })
                         }
-                        if (lazySignalUIReadyForFn) {
-                            if (!appMountedAtom.get()) {
-                                appMountedAtom.set(true)
-                                sendAppMounted()
-                                return
+                        onDeepLinkFailedFnAtom.set(failedFn)
+                        const errorBuffer = errorResultAtom.get()
+                        console.log('errorBuffer', errorBuffer)
+                        if (errorBuffer !== null) {
+                            console.log('lazy failed')
+                            failedFn(errorBuffer)
+                            errorResultAtom.set(null)
+                        }
+                        if (typeof onDeepLinkFailedFnAtom.get() === 'function') {
+                            console.log('fn', onDeepLinkFailedFnAtom.get())
+                        }
+                        return () => {
+                            console.log('unsub')
+                            if (onDeepLinkFailedFnAtom.get() === failedFn) {
+                                onDeepLinkFailedFnAtom.set(undefined)
                             }
-                            const result = resultFromDeepLinkAtom.get()
-                            if (result instanceof Error && fn) {
-                                safeTry(
-                                    async () => {
-                                        await fn(result)
-                                        resultFromDeepLinkAtom.set(null)
-                                    },
-                                    new BigIOError('Failed at lazy onFailedFn', {
-                                        bigioErrorStack: [
-                                            {
-                                                ctx: String(result),
-                                            },
-                                        ],
-                                    }),
-                                )
-                            }
+                        }
+                    },
+                    onDeepLinkNewUser: (newUserFn: NewUserFn) => {
+                        if (!isElectronWindow(window)) {
                             return
+                        }
+                        if (typeof newUserFn !== 'function') {
+                            throw new BigIOError('onDeepLinkNewUser must be a function', {
+                                bigioErrorStack: [{ ctx: newUserFn }],
+                            })
+                        }
+                        onDeepLinkNewUserFnAtom.set(newUserFn)
+                        const newUserBuffer = newUserResultAtom.get()
+                        console.log('newUserBuffer', newUserBuffer)
+                        if (
+                            newUserBuffer &&
+                            !(newUserBuffer instanceof Error) &&
+                            'user' in newUserBuffer
+                        ) {
+                            console.log('lazy succeed')
+                            newUserFn(newUserBuffer)
+                            newUserResultAtom.set(null)
+                        }
+                        if (typeof onDeepLinkNewUserFnAtom.get() === 'function') {
+                            console.log('fn', onDeepLinkNewUserFnAtom.get())
+                        }
+                        return () => {
+                            console.log('unsub')
+                            if (onDeepLinkNewUserFnAtom.get() === newUserFn) {
+                                onDeepLinkNewUserFnAtom.set(undefined)
+                            }
                         }
                     },
                 },
+            } as unknown as {
+                bigio: {
+                    signInSocial: (params: {
+                        provider: string
+                        scopes?: string[]
+                        additionalData?: Record<string, unknown>
+                        loginHint?: string
+                        requestSignUp?: boolean
+                    }) => void
+
+                    onDeepLinkSuccess: OnDeepLinkSucceedFn
+                    onDeepLinkFailed: OnDeepLinkFailedFn
+                    onDeepLinkNewUser: OnDeepLinkNewUserFn
+                }
             }
         },
     } satisfies BetterAuthClientPlugin
