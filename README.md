@@ -1,19 +1,21 @@
 # @bigio/better-auth-electron
 
-This plugin establishes a secure, **event-driven** authentication bridge between Electron and Better Auth. It treats the system browser strictly as a **stateless transport layer**, utilizing **AES-encrypted tickets** and **PKCE verification** to perform session handoff without persisting web cookies in the desktop environment.
+Refactor notice: this project is being updated to ensure compatibility with Better Auth `v1.5.x` (latest patch line).
 
-The renderer implementation abandons traditional redirect handling in favor of an IPC-based subscription model (`onDeepLink*`). It features a built-in **cold-start buffer** to guarantee token capture even if the deep link triggers the application before the UI is fully mounted. The API surface is designed to mirror the official Better Auth client patterns, ensuring strict typing and zero-friction integration.
+This plugin implements an **event-driven** authentication bridge between Electron and Better Auth. It uses **AES-encrypted tickets** and **PKCE verification** for session handoff, and is designed so Electron authentication does not depend on sharing browser session cookies.
+
+The renderer side uses an IPC subscription model (`onDeepLink*`) instead of redirect-driven UI handling. It includes a cold-start buffer for deep-link events that arrive before the renderer is mounted. The API shape follows common Better Auth client naming patterns while keeping Electron-specific behavior explicit.
 
 ### Key Architecture
 
-- **Stateless Web Handoff**: The browser authenticates via OAuth but does not share the session with Electron. It passes an encrypted, time-limited ticket back to the desktop app.
+- **Stateless Web Handoff**: OAuth runs in the browser, and Electron receives an encrypted, time-limited ticket for session handoff.
 - **Security**: Full PKCE flow (Proof Key for Code Exchange) with verified challenges and AES-encrypted exchange tickets.
 - **Event-Driven Renderer**: No page reloads or router redirects. Listen for `onDeepLinkSuccess`, `onDeepLinkNewUser`, or `onDeepLinkFailed` directly within your React/Vue components.
-- **Cold Start Support**: Includes an internal IPC buffer to cache deep link events that occur during the application boot phase, ensuring no authentication intent is lost while the renderer initializes.
-- **API Parity**: Extends the `authClient` with a `bigio` namespace that mimics standard Better Auth methods (e.g., `signInSocial`).
-- **Native Secure Context & Origin Fix:** Leverages `protocol.registerSchemesAsPrivileged` to treat your custom scheme as a secure context. This solves the infamous `Origin` header mismatch.
+- **Cold Start Support**: Uses an internal IPC buffer to hold deep-link events during application startup until the renderer is ready.
+- **API Alignment**: Extends `authClient` with a `bigio` namespace using familiar method naming (for example, `signInSocial`).
+- **Secure Context and Origin Handling**: Uses `protocol.registerSchemesAsPrivileged` so the custom scheme is treated as a secure context and origin handling remains predictable.
 
-#### _I'm currently studying the official implementation; the documentation is still rough but will be improved soon. I'm eager and looking forward to exchanging ideas with everyone._
+#### _This is a personal plugin project. The docs are still evolving and will be refined continuously._
 
 # Authentication Flow
 
@@ -41,7 +43,7 @@ sequenceDiagram
         Browser->>User: Show "Continue as [User]" or "Switch Account"
         alt User selects "Fast Login"
             User->>Browser: Click "Continue as [User]"
-            Browser->>Server: Request Fast Ticket (POST /fast-ticket)
+            Browser->>Server: Request Fast Ticket (POST /api/auth/electron/fastTicket)
             Server->>Server: Generate Encrypted Ticket
             Server-->>Browser: Return Redirect URL (bigio://...)
         else User selects "Switch Account"
@@ -71,14 +73,14 @@ sequenceDiagram
     Browser->>E_M: Trigger Deep Link (Custom Protocol)
     E_M->>E_R: Send Ticket & Verifier via IPC
     E_R->>E_R: Verify PKCE Challenge
-    E_R->>Server: POST /exchange-ticket (Ticket + Verifier)
+    E_R->>Server: POST /api/auth/electron/exchange (Ticket + Verifier)
     Server->>Server: Decrypt Ticket, Verify PKCE
     Server->>Server: Create Electron-specific Session
     Server-->>E_R: Return Session Cookie (SameSite=None)
     E_R->>E_R: Login Success, Refresh UI
 ```
 
-Based on my study of the official implementation code, I have decided on the following to-do list:
+Current roadmap:
 
 **~~1. Architecture: The "Silent Handoff" (Stateless & Secure)~~**
 
@@ -108,6 +110,17 @@ Based on my study of the official implementation code, I have decided on the fol
 
 - [done] ~~**Smart Web Handoff UI (Optional/Next)**: Update the web-side confirmation page to detect and display the currently logged-in web user, offering a "Continue as [User]" button for a seamless transition.~~
 
+**4. Runtime Robustness & Architecture**
+
+- [ ] **Multi-Window Instance Support**: Support concurrent authentication flows across multiple Electron windows without shared-state collisions.
+- _Reason_: Prevent verifier/ticket/event cross-talk when more than one renderer window is active.
+
+- [ ] **FCIS Refactor**: Optimize the code structure to follow the Functional Core, Imperative Shell (FCIS) architectural pattern.
+- _Reason_: Isolate pure auth domain logic from Electron/IPC side effects for stronger testability and safer Better Auth upgrades.
+
+- [ ] **Engineering-Standard Test Workflow**: Establish a CI-backed test workflow (unit, integration, and end-to-end smoke tests) with required quality gates (`pnpm typecheck`, `pnpm lint`, `pnpm test`, and coverage checks) before release.
+- _Reason_: Prevent regressions in OAuth handoff, deep-link handling, and ticket/session exchange as Better Auth versions evolve.
+
 # Installation
 
 ```bash
@@ -117,7 +130,7 @@ pnpm add @bigio/better-auth-electron
 Ensure peer dependencies are installed:(more framework support coming soon...)
 
 ```bash
-pnpm add better-auth electron react react-dom
+pnpm add better-auth electron react react-dom zod
 ```
 
 # Quick Start
@@ -126,13 +139,13 @@ pnpm add better-auth electron react react-dom
 
 Initialize Better Auth with the `electronServerPlugin`. This handles the ticket exchange and verification logic on your backend.
 
-#### The "Silent Handoff" Mechanism (Stateless & Secure)
+#### "Silent Handoff" Mechanism (Stateless Ticket Exchange)
 
-This plugin implements a **Server-Side Cookie Interception** strategy to ensure strict isolation between the Web Session and the Electron Session.
+This plugin uses **server-side cookie interception** to keep browser and Electron session concerns separated during handoff.
 
-- It intercepts OAuth callback responses specifically for Electron. It actively **removes the `Set-Cookie` header** (which contains the session token) before the response reaches the browser.
-- This guarantees that the Electron login flow **does not overwrite or interfere** with the user's existing browser session.
-- Authentication relies solely on a one-time encrypted Ticket. The browser acts as a purely **`stateless`** transport layer for Electron.
+- It intercepts OAuth callback responses for Electron and removes `Set-Cookie` session headers before they reach the browser in this flow.
+- This reduces the chance that Electron handoff mutates the user's existing browser session state.
+- Authentication handoff uses a one-time encrypted ticket, and the browser is used as a transport step for the Electron flow.
 
 ```typescript
 import { betterAuth } from 'better-auth'
@@ -157,17 +170,17 @@ export const auth = betterAuth({
 
 ### 2. Electron Main Process (`src/main/index.ts`)
 
-Use `mainInjection` to setup IPC handlers and deep linking strategies. This automatically handles the "protocol" opening events.
+Use `mainInjection` to set up IPC handlers and deep-link plumbing for protocol open events.
 
-### Security & CSP Configuration
+### Security and CSP Configuration
 
-** IMPORTANT: Clean up your `index.html`**
+**Important: Review your `index.html` CSP setup**
 
-This plugin automatically injects a rigorous, production-ready **Content Security Policy (CSP)** via the Main Process.
+By default, this plugin injects a CSP from the Main process for the Electron main frame.
 
-**You CAN remove** any manual CSP `<meta>` tags from your `index.html` (renderer). Leaving them in will cause the browser to enforce the "intersection" of both policies, likely breaking your Auth flow (e.g., blocking the OAuth popup or API connection).
+If you also define CSP via `<meta>` in `index.html`, the browser enforces the intersection of both policies, which can block OAuth popups or API calls.
 
-**DELETE this from your `index.html`:**
+If you rely on plugin-managed CSP, remove renderer-level meta CSP like this:
 
 ```html
 <meta
@@ -190,14 +203,13 @@ const { windowInjection, whenReadyInjection } = mainInjection({
   isOAuth: true,
   ELECTRON_APP_NAME: 'bigio-electron-demo',
   ELECTRON_SCHEME: 'bigio', // Must match the server config
-  PROVIDERS: ['github', 'google'],
   BETTER_AUTH_BASEURL: 'http://localhost:3002',
   FRONTEND_URL: 'http://localhost:3001/oauth',
   /**
    * [Optional] Content Security Policy (CSP) Configuration
    * * Strategy: "All-or-Nothing"
-   * - undefined (Default): The plugin automatically injects a secure, production-ready CSP (The "MVP" Fallback).
-   * - string: The plugin uses YOUR string exactly. No merging, no magic. You take full control.
+   * - undefined (default): the plugin applies its built-in CSP template.
+   * - string: your CSP string is used as-is (no merge behavior).
    */
   CONTENT_SECURITY_POLICY: "default-src 'self'; ...", // override completely
 })
@@ -218,7 +230,7 @@ app.whenReady().then(() => {
 })
 ```
 
-**If CONTENT_SECURITY_POLICY is not provided, the plugin applies the following strictly secure rules to the Main Frame (index.html) automatically. This ensures Auth works out-of-the-box while keeping your app secure.**
+If `CONTENT_SECURITY_POLICY` is not provided, the plugin applies the following default policy to the Electron main frame:
 
 ```http
 default-src 'self';
@@ -226,7 +238,7 @@ script-src 'self';
 style-src 'self' 'unsafe-inline';
 # Allows loading images from 'self', OAuth providers (https:), and your Auth Server
 img-src 'self' data: blob: https: ${BETTER_AUTH_BASEURL};
-# Strictly restricts API connections to 'self' and your Auth Server
+# Restricts API connections to 'self' and your Auth Server
 connect-src 'self' ${BETTER_AUTH_BASEURL};
 font-src 'self' data:;
 # Prevents clickjacking attacks
@@ -253,7 +265,7 @@ export const authClient = createAuthClient({
   ],
 })
 
-// Important: Register the client instance for plugin lazy access, this for soical signin
+// Important: Register the client instance for plugin lazy access (required for social sign-in handoff)
 setLazyClient(authClient)
 ```
 
@@ -281,15 +293,15 @@ export const authClient = createAuthClient({
 })
 ```
 
-### 5. Electron Renderer Integration (New API)
+### 5. Electron Renderer Integration
 
-I have refactored the client-side integration to closely mirror the official Better Auth API structure, while adapting it for the specific constraints of the Electron environment (IPC & Deep Linking).
+The client-side integration uses Electron-specific primitives (IPC and deep links) while keeping method naming familiar for Better Auth users.
 
 ### Key Features
 
-- **Official API Parity:** Uses a syntax similar to `authClient.signIn.social`.
+- **API Shape Alignment:** Uses a calling style similar to `authClient.signIn.social`.
 - **Callback Functions over URLs:** Instead of handling redirects, we use event subscriptions (`onDeepLinkSuccess`, `onDeepLinkNewUser`) to handle the authentication result.
-- **Cold Start Support:** The plugin includes an internal buffer. If the application is opened via a Deep Link before the UI is fully mounted, the plugin caches the session data and triggers the callback immediately upon registration.
+- **Cold Start Support:** The plugin keeps a startup buffer so deep-link events can be handled after UI listeners are registered.
 
 ### Implementation
 
@@ -308,36 +320,38 @@ Use `signInSocial` to initiate the flow. This handles the construction of the OA
 import { authClient } from '@/lib/auth-client' // Your initialized client
 
 // ... inside your component
-;<button
-  onClick={async () => {
-    await authClient.bigio.signInSocial({
-      // [Required] The provider key (e.g., 'github', 'google')
-      provider: 'github',
+return (
+  <button
+    onClick={async () => {
+      await authClient.bigio.signInSocial({
+        // [Required] The provider key (e.g., 'github', 'google')
+        provider: 'github',
 
-      // [Optional] Array of OAuth scopes
-      scopes: ['repo', 'user'],
+        // [Optional] Array of OAuth scopes
+        scopes: ['repo', 'user'],
 
-      // [Optional] Object passed to the backend (JSON serialized via URL)
-      // Warning: Keep this payload small to avoid URL length issues.
-      additionalData: {
-        theme: 'dark',
-        ref_source: 'desktop_app',
-      },
+        // [Optional] Object passed to the backend (JSON serialized via URL)
+        // Warning: Keep this payload small to avoid URL length issues.
+        additionalData: {
+          theme: 'dark',
+          ref_source: 'desktop_app',
+        },
 
-      // [Optional] Hint for the provider (e.g., email address)
-      loginHint: 'user@example.com',
+        // [Optional] Hint for the provider (e.g., email address)
+        loginHint: 'user@example.com',
 
-      // [Optional] Force a sign-up screen instead of sign-in
-      requestSignUp: false,
-    })
-  }}>
-  Sign in with GitHub
-</button>
+        // [Optional] Force a sign-up screen instead of sign-in
+        requestSignUp: false,
+      })
+    }}>
+    Sign in with GitHub
+  </button>
+)
 ```
 
 #### 2. Handling the Callback (Deep Link)
 
-Instead of a page redirect, we listen for IPC completion events. You **must** register listeners for success, failure, and (optionally) new user creation.
+Instead of a page redirect, register IPC completion listeners for success, failure, and optionally new-user handling.
 
 These functions return an **unsubscribe** handler. You are responsible for cleaning this up to prevent memory leaks or double-firing events.
 
@@ -376,9 +390,9 @@ export default function LoginPage() {
 
         // Cleanup: Essential for React's StrictMode and component unmounting
         return () => {
-            unsubscribeSuccess()
-            unsubscribeNewUser()
-            unsubscribeError()
+            unsubscribeSuccess?.()
+            unsubscribeNewUser?.()
+            unsubscribeError?.()
         }
     }, [])
 
@@ -401,13 +415,15 @@ export default function LoginPage() {
 
 ### 6. Web/App Component Usage (`src/web/components/user-session.tsx`)
 
-The `useElectronOAuthSession` hook is the core of the "Handoff" experience. It manages the synchronization between the web authentication state and the Electron application.
+The `useElectronOAuthSession` hook coordinates web authentication state with the Electron handoff flow.
 
 #### Component Implementation
 
-The hook provides reactive states to manage the UI. Most importantly, the 'pending' state serves as a "Session Detected" signal.
+The hook exposes reactive state for UI control. In practice, `'pending'` means a reusable web session was detected and a user decision is needed.
 
-To resolve this state, you use the `setFastLogin` function. Calling this function immediately updates the oauthStatus and triggers the next step in the authentication flow.
+Use `setFastLogin` to continue the flow:
+- `true`: reuse existing web session via fast ticket flow.
+- `false`: force provider login flow.
 
 ```tsx
 import { useEffect } from 'react'
@@ -420,8 +436,7 @@ export function UserSessionStatus() {
     isPending, // Initial loading state
 
     // Status enum: 'idle' | 'pending' | 'connecting' | 'succeed' | 'failed'
-    // 'pending': CRITICAL state. It confirms a valid session ALREADY exists
-    // and the system is pausing to wait for the user's decision.
+    // 'pending': a web session exists and the flow is waiting for user choice.
     oauthStatus,
     oauthError,
 
@@ -436,9 +451,9 @@ export function UserSessionStatus() {
    * If you want to skip the user choice UI:
    */
   useEffect(() => {
-    setFastLogin(true) // Force Fast Login immediately
+    // setFastLogin(true)  // Force Fast Login immediately
     // OR
-    setFastLogin(false) // Force Switch Account immediately
+    // setFastLogin(false) // Force Switch Account immediately
   }, [])
 
   /**
